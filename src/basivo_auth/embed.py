@@ -59,6 +59,16 @@ TEST_REQUIREMENTS: tuple[str, ...] = (
     "asgi-lifespan>=2.1.0",
 )
 
+TYPING_REQUIREMENTS: tuple[str, ...] = (
+    # Without these the auth package does not type-check in a host project:
+    # redis-py ships no generic `Redis`, so the `Redis[str]` annotations are an
+    # error until the stubs are installed. `basivo-auth new` puts them in the
+    # projects it generates; in embedded mode the host owns pyproject.toml, so
+    # they have to be reported instead.
+    "types-redis>=4.6.0",
+    "types-qrcode>=8.0",
+)
+
 DATABASE_REQUIREMENTS: dict[Database, tuple[str, ...]] = {
     Database.POSTGRES: ("asyncpg>=0.30.0",),
     Database.SQLITE: ("aiosqlite>=0.20.0",),
@@ -282,4 +292,25 @@ def build_manual_steps(
         + '\n      asyncio_mode = "auto"'
         + '\n      markers = ["security: encodes a specific security control"]'
     )
+    steps.append(
+        "If you run mypy, add these dev dependencies:\n"
+        + "\n".join(f"      {item}" for item in TYPING_REQUIREMENTS)
+        + "\n      and this override, or the engine reports a type-var mismatch\n"
+        + "      it cannot resolve (SQLAlchemy Mapped[...] vs the engine's protocol):\n"
+        + "\n".join(f"      {line}" for line in _mypy_override(answers).splitlines())
+    )
     return steps
+
+
+def _mypy_override(answers: ProjectAnswers) -> str:
+    module = answers.package_module
+    return (
+        "[[tool.mypy.overrides]]\n"
+        "module = [\n"
+        f'    "{module}.engine.adapters",\n'
+        f'    "{module}.engine.backends",\n'
+        f'    "{module}.engine.dependencies",\n'
+        f'    "{module}.engine.manager",\n'
+        "]\n"
+        'disable_error_code = ["type-var"]'
+    )

@@ -74,6 +74,24 @@ def bundled_template_path() -> Path:
     )
 
 
+def _local_ref(local: bool, vcs_ref: str | None) -> str | None:
+    """Make ``--local`` mean what CONTRIBUTING says it means.
+
+    The bundled template is a git checkout, and Copier resolves a git source to
+    a *committed* ref by default — so a contributor who edits the template and
+    runs ``basivo-auth new --local`` renders the last release and never sees
+    their own change. They then debug output that has nothing to do with the
+    code in front of them.
+
+    ``vcs_ref="HEAD"`` tells Copier to include the working tree, uncommitted
+    edits and all. Only applied for ``--local``: for a remote template a ref
+    still has to be an actual published ref.
+    """
+    if local and vcs_ref is None:
+        return "HEAD"
+    return vcs_ref
+
+
 def default_template_url() -> str:
     return os.environ.get(TEMPLATE_ENV_VAR, "").strip() or DEFAULT_TEMPLATE_URL
 
@@ -104,6 +122,7 @@ def generate(
 ) -> Path:
     """Render a new project. Returns the destination path."""
     src = resolve_template(template, local=local)
+    vcs_ref = _local_ref(local, vcs_ref)
 
     if destination.exists() and any(destination.iterdir()) and not overwrite:
         raise GenerationError(

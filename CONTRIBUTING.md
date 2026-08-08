@@ -20,8 +20,12 @@ uv run pytest                          # the generator's own tests
 basivo-auth new /tmp/demo --local --defaults
 ```
 
-`--local` uses your working copy instead of fetching from GitHub. You will want
-it constantly.
+`--local` renders your working copy — uncommitted edits included — instead of
+fetching from GitHub. You will want it constantly.
+
+(It passes Copier `vcs_ref=HEAD` to do that. Copier resolves a git source to a
+committed ref otherwise, which silently renders the last release and makes it
+look like your template edit did nothing.)
 
 ## How the repo is laid out
 

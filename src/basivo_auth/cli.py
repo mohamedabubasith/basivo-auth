@@ -540,7 +540,11 @@ def _render_embed_result(
     console.print("\n[bold]Next[/bold]")
     steps = embed.build_manual_steps(answers, host.app_module, host.app_variable, host.has_alembic)
     for index, step in enumerate(steps, start=1):
-        console.print(f"  [cyan]{index}.[/cyan] {step}")
+        # Escaped: these steps contain literal TOML and Python, and Rich reads
+        # square brackets as markup — `[[tool.mypy.overrides]]` was being
+        # rendered as an empty string, so the instruction told the reader to
+        # add nothing.
+        console.print(f"  [cyan]{index}.[/cyan] {escape(step)}")
 
     console.print(
         "\n[dim]Auth owns only "

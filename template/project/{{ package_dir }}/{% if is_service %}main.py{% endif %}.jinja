@@ -59,6 +59,20 @@ from {{ package_module }}.settings import get_settings
 
 logger = structlog.get_logger(__name__)
 
+CSRF_EXEMPT_PREFIXES: tuple[str, ...] = ()
+"""Path prefixes exempt from the CSRF check.
+
+Empty here, because every route this service exposes is authenticated by a
+cookie. Add a prefix only when you mount routes of your own that are
+authenticated by something the browser will *not* attach on a cross-site
+request — an API key header, an HMAC signature, a client certificate. CSRF does
+not apply to those, and enforcing it rejects callers who send their credential
+in a header the middleware does not recognise.
+
+Adding a prefix whose routes a session cookie alone can authorise hands an
+attacker a cross-site write.
+"""
+
 VERSION = "0.1.0"
 
 
@@ -116,6 +130,7 @@ def create_app() -> FastAPI:
 {%- if transport_cookie %}
     app.add_middleware(
         CSRFMiddleware,
+        exempt_prefixes=CSRF_EXEMPT_PREFIXES,
         # The login and refresh endpoints bootstrap the session, so there is no
         # CSRF cookie to present yet. They are safe to exempt: neither performs
         # a state change an attacker benefits from forging, and both are

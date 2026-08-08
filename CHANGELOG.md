@@ -13,6 +13,48 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-08-09
+
+### Fixed
+
+**`--local` rendered the last release, not your working copy.** Copier resolves
+a git source to a committed ref, so a contributor who edited the template and
+ran `basivo-auth new --local` generated the previous version and never saw
+their own change — while `CONTRIBUTING.md` promised the opposite. `--local` now
+passes `vcs_ref=HEAD`, which includes uncommitted edits. This one silently
+wasted debugging time on output that had nothing to do with the code in front
+of you.
+
+**The 2FA step-up token was not consumed on use.** Within its 300-second life
+it could be exchanged at `/auth/2fa/verify` more than once, each exchange
+minting another session. An attacker still needed a valid TOTP or recovery
+code, so the exposure was bounded — but a credential that survives its own use
+is one a proxy log, a crash report or a shared terminal can pass on inside the
+window. The `jti` is now burned before the code is even checked, set-if-absent
+so concurrent exchanges resolve to one winner. Announced as a known issue in
+0.2.0.
+
+**`install_auth` could not exempt an application's own API from CSRF.** A host
+embedding this package alongside routes authenticated by an API key, an HMAC
+signature or a client certificate had no way to say so, and the CSRF middleware
+rejected those callers with "CSRF token missing" — wrong, and impossible to act
+on. `install_auth(app, csrf_exempt_prefixes=("/flows",))` now exists; service
+mode has a `CSRF_EXEMPT_PREFIXES` constant. Only exempt prefixes where no route
+can be authorised by an ambient cookie.
+
+**`init` under-reported what an embedded host needs.** It listed the test
+dependencies but not `types-redis` / `types-qrcode`, nor the mypy override for
+the engine modules — so an embedded install that ran mypy failed with errors
+the standalone template already configures around. CI missed it because the
+embed job runs pytest and never mypy.
+
+**A generated docstring overflowed the line limit** when the package module
+path was long, which happens in embedded mode. The project failed its own lint
+depending on how it was named.
+
+**Rich markup ate literal brackets in `init` output**, rendering
+`[[tool.mypy.overrides]]` as an empty string — an instruction to add nothing.
+
 ## [0.2.0] — 2026-08-08
 
 ### Changed — **breaking, action required**
@@ -66,7 +108,7 @@ key into Secrets Manager.
 - The 2FA step-up token is not consumed on use. Within its 300-second lifetime
   it can be exchanged at `/auth/2fa/verify` more than once, each time minting a
   session — an attacker still needs a valid TOTP or recovery code to do so.
-  Being fixed for 0.2.1.
+  **Fixed in 0.2.1.**
 
 ## [0.1.0] — 2026-08-08
 
@@ -131,6 +173,7 @@ First release.
 - Passkeys and SAML generate settings and dependencies but no routes yet.
   Passkeys is off in every preset; SAML is enabled by the `enterprise` preset.
 
-[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.1.0
