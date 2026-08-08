@@ -13,6 +13,21 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.2.2] — 2026-08-09
+
+### Fixed
+
+**A project updated to 0.2.1 failed its own lint.** The step-up import added in
+0.2.1 was written as a separate line for a module already imported above. A
+fresh `basivo-auth new` hid it, because post-generation formatting merges the
+two — but `basivo-auth update` does not re-run the formatter, so every existing
+project that pulled the fix got an unsorted import block and a red CI run.
+
+Fixed in the template rather than by making `update` reformat: rewriting files
+`update` touched would fight the three-way merge and could silently reformat a
+developer's own edits. The import is now written where isort would put it, so
+both paths produce the same clean output.
+
 ## [0.2.1] — 2026-08-09
 
 ### Fixed
@@ -173,7 +188,8 @@ First release.
 - Passkeys and SAML generate settings and dependencies but no routes yet.
   Passkeys is off in every preset; SAML is enabled by the `enterprise` preset.
 
-[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.2
 [0.2.1]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.1.0
