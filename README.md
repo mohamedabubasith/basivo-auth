@@ -166,6 +166,16 @@ basivo-auth new demo --local --defaults --no-install
 uv run pytest
 ```
 
+## Contributing
+
+Bug reports, features and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md). It documents the rules that are enforced
+(the engine seam, conditional filenames, why you must never hand-tune Jinja
+whitespace) and how to test what you changed, since `pytest` alone checks the
+generator rather than what it produces.
+
+Found a security issue? **Do not open an issue** — see [SECURITY.md](SECURITY.md).
+
 ## License
 
 MIT.

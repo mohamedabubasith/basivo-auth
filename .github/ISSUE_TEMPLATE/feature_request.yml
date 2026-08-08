@@ -1,0 +1,41 @@
+name: Feature request
+description: Something the generated code should support
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation, not the solution. It often has a shorter route.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like it to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Should this be optional?
+      description: >-
+        Every always-on addition is code that every generated project carries
+        forever. Optional features cost a flag; unavoidable ones cost everyone.
+      options:
+        - Optional — behind a feature flag
+        - Always on — every project should have it
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security implications
+      description: >-
+        This is authentication code. What could go wrong if it were implemented
+        carelessly? An honest answer here shapes the design more than anything
+        else in the issue.

@@ -1,0 +1,233 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_NO_PROGRESS: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  lint:
+    name: lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --dev
+      - run: uv run ruff check --output-format=github .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+
+  test:
+    name: cli tests (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync --all-extras --dev
+      - run: uv run pytest -q
+
+  # The tests above check the generator. This checks what it *produces* —
+  # which is where every real bug in this project has been found. A template
+  # can be internally consistent and still emit code that will not import.
+  generate:
+    name: generated project (${{ matrix.preset }}, ${{ matrix.state }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: minimal
+            state: redis
+          - preset: standard
+            state: redis
+          - preset: enterprise
+            state: redis
+          # The Redis-free path has its own implementations of lockout, OTP and
+          # single-use markers, so it needs its own run.
+          - preset: enterprise
+            state: database
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: install the CLI
+        run: uv sync --all-extras --dev
+
+      - name: generate
+        run: |
+          uv run basivo-auth new demo-auth \
+            --local --defaults --no-git \
+            --preset "${{ matrix.preset }}" \
+            --state "${{ matrix.state }}"
+
+      - name: the engine seam holds
+        working-directory: demo-auth
+        run: |
+          if grep -rn --include="*.py" -E "^\s*(from|import)\s+fastapi_users" app \
+               | grep -v "^app/engine/"; then
+            echo "::error::fastapi_users may only be imported inside app/engine/."
+            exit 1
+          fi
+          echo "seam intact"
+
+      - name: lint, types, tests
+        working-directory: demo-auth
+        run: |
+          uv run ruff check --output-format=github .
+          uv run ruff format --check .
+          uv run mypy app
+          uv run pytest -q --no-cov
+
+      # A generated project must lint clean even when the user skipped the
+      # dependency install, because that path skips a different code route.
+      - name: --no-install output is also clean
+        run: |
+          uv run basivo-auth new noinstall-auth \
+            --local --defaults --no-git --no-install \
+            --preset "${{ matrix.preset }}" \
+            --state "${{ matrix.state }}"
+          cd noinstall-auth && uvx ruff check --output-format=github .
+
+  terraform:
+    name: terraform (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ecs, lambda, both]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - run: uv sync --all-extras --dev
+      - name: generate
+        run: |
+          uv run basivo-auth new tf-auth \
+            --local --defaults --no-git --no-install \
+            --deploy "${{ matrix.target }}"
+
+      - name: validate
+        working-directory: tf-auth/terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform fmt -check -recursive .
+
+  embed:
+    name: install into an existing project
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --dev
+
+      - name: build a host project
+        run: |
+          mkdir -p host/shopapi && cd host
+          cat > pyproject.toml <<'TOML'
+          [project]
+          name = "shopapi"
+          version = "0.1.0"
+          requires-python = ">=3.12"
+          dependencies = [
+              "fastapi>=0.115.0",
+              "sqlalchemy[asyncio]>=2.0.36",
+              "aiosqlite>=0.20.0",
+          ]
+          [dependency-groups]
+          dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0", "anyio>=4.6.0",
+                 "fakeredis>=2.26.1", "asgi-lifespan>=2.1.0"]
+          [tool.pytest.ini_options]
+          asyncio_mode = "auto"
+          markers = ["security: encodes a specific security control"]
+          [build-system]
+          requires = ["hatchling"]
+          build-backend = "hatchling.build"
+          [tool.hatch.build.targets.wheel]
+          packages = ["shopapi"]
+          TOML
+          : > shopapi/__init__.py
+          cat > shopapi/database.py <<'PY'
+          from collections.abc import AsyncGenerator
+          from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+          from sqlalchemy.orm import DeclarativeBase
+
+          engine = create_async_engine("sqlite+aiosqlite:///./shop.db")
+          SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+          class Base(DeclarativeBase):
+              pass
+
+
+          async def get_db() -> AsyncGenerator[AsyncSession, None]:
+              async with SessionLocal() as session:
+                  yield session
+          PY
+          cat > shopapi/main.py <<'PY'
+          from fastapi import FastAPI
+
+          app = FastAPI()
+
+
+          @app.get("/products")
+          async def products() -> list[dict]:
+              return []
+          PY
+
+      - name: install auth into it
+        working-directory: host
+        run: |
+          "$GITHUB_WORKSPACE/.venv/bin/basivo-auth" init \
+            --yes --local --db sqlite --preset standard
+
+      - name: it adopted the host's database layer
+        working-directory: host
+        run: |
+          grep -q "from shopapi.database import Base as Base" shopapi/auth/db.py
+          grep -q "get_db as get_async_session" shopapi/auth/db.py
+          echo "host Base and session adopted"
+
+      - name: the host's own files were not rewritten
+        working-directory: host
+        run: |
+          grep -q "async def products" shopapi/main.py
+          grep -q '"fastapi>=0.115.0"' pyproject.toml
+          echo "host files intact"
+
+      - name: generated tests pass inside the host
+        working-directory: host
+        run: |
+          uv sync
+          uv run pytest tests/auth -q

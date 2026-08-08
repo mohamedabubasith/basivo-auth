@@ -1,0 +1,59 @@
+name: Bug report
+description: Something the CLI or the generated code does wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Found a security vulnerability?** Do not file it here — use
+        [private reporting](https://github.com/mohamedabubasith/basivo-auth/security/advisories/new).
+        See [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where is the problem?
+      options:
+        - The CLI (generating, updating, detection)
+        - The generated project (code that was produced)
+        - The generated Terraform
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command
+      description: Including flags — the feature combination usually matters.
+      placeholder: basivo-auth new acme-auth --preset enterprise --state database
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output or traceback
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`basivo-auth --version`"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python
+      placeholder: macOS 15, Python 3.12
