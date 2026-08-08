@@ -171,21 +171,6 @@ resource "random_password" "secret_key" {
   special = false
 }
 
-resource "random_password" "jwt_secret" {
-  length  = 64
-  special = false
-}
-
-resource "random_password" "refresh_secret" {
-  length  = 64
-  special = false
-}
-
-resource "random_password" "csrf_secret" {
-  length  = 64
-  special = false
-}
-
 resource "random_password" "db_password" {
   length  = 32
   special = false
@@ -203,10 +188,9 @@ resource "aws_secretsmanager_secret_version" "app" {
   secret_string = jsonencode(merge(
     {
       ENVIRONMENT          = var.environment
+      # The only secret the service needs. Every other key is derived from
+      # it with HKDF at runtime.
       SECRET_KEY           = random_password.secret_key.result
-      JWT_SECRET           = random_password.jwt_secret.result
-      REFRESH_TOKEN_SECRET = random_password.refresh_secret.result
-      CSRF_SECRET          = random_password.csrf_secret.result
 {%- if has_lambda %}
       # RDS Proxy when enabled, the instance directly otherwise. The proxy is
       # what keeps Lambda concurrency from exhausting Postgres connections.

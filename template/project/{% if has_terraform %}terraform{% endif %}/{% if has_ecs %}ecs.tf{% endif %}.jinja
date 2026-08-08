@@ -299,8 +299,7 @@ resource "aws_ecs_task_definition" "main" {
     # They never appear in the task definition, the image, or your repository.
     secrets = [
       for key in [
-        "ENVIRONMENT", "SECRET_KEY", "JWT_SECRET", "REFRESH_TOKEN_SECRET",
-        "CSRF_SECRET", "DATABASE_URL",
+        "ENVIRONMENT", "SECRET_KEY", "DATABASE_URL",
 {%- if uses_redis %}
         "REDIS_URL",
 {%- endif %}

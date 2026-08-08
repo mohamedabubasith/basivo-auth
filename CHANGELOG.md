@@ -13,11 +13,60 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-08
+
+### Changed — **breaking, action required**
+
+**Four secrets became one.** A generated project now configures a single
+`SECRET_KEY`. `JWT_SECRET`, `REFRESH_TOKEN_SECRET` and `CSRF_SECRET` are gone.
+
+Two of those three were never read. `REFRESH_TOKEN_SECRET` and `CSRF_SECRET`
+were required at startup, validated for length, checked for distinctness — and
+used by nothing. CSRF signing already derived its key from `SECRET_KEY`. They
+were pure operational burden, and burden of exactly the kind that goes wrong:
+four variables to provision per environment, any one of which could be missed,
+weak, or accidentally copied between staging and production.
+
+Every key is now derived from `SECRET_KEY` with HKDF-SHA256 under a distinct
+label — `jwt`, `csrf`, `reset-password`, `verify-email`, `oauth-state` and
+(with TOTP) `totp`. This keeps the property the separate variables were there
+for: HKDF outputs are independent, so a leaked subkey reveals nothing about the
+master or its siblings. What changes is who carries it. Derivation also closes
+a gap the old scheme had — password reset and email verification tokens
+previously used the raw `SECRET_KEY` directly, sharing a key with TOTP seed
+encryption.
+
+To upgrade an existing project:
+
+```bash
+basivo-auth update
+# then delete JWT_SECRET, REFRESH_TOKEN_SECRET and CSRF_SECRET from .env
+# and from your secret manager. SECRET_KEY stays as it is.
+```
+
+Because the JWT key is now derived rather than read from `JWT_SECRET`, tokens
+signed before the upgrade will not verify after it. **Every session ends and
+outstanding reset/verification links stop working**, once, at the deploy. Users
+sign in again. Nothing is lost. Enrolled TOTP seeds are unaffected — they were
+already encrypted under a key derived from `SECRET_KEY`, which does not change.
+
+Generated Terraform drops the three `random_password` resources and writes one
+key into Secrets Manager.
+
 ### Added
+- `Settings.subkey(purpose)` / `subkey_str(purpose)` — the derivation used
+  everywhere, with tests asserting subkeys are distinct per purpose,
+  deterministic across processes, and all change when the master does.
 - Contributor infrastructure: CI for the generator itself (lint, types, tests,
   plus generating and verifying real projects across presets, both state
   backends, three Terraform targets, and an embedded install), issue and PR
   templates, `SECURITY.md`, `CONTRIBUTING.md`, Dependabot.
+
+### Known issues
+- The 2FA step-up token is not consumed on use. Within its 300-second lifetime
+  it can be exchanged at `/auth/2fa/verify` more than once, each time minting a
+  session — an attacker still needs a valid TOTP or recovery code to do so.
+  Being fixed for 0.2.1.
 
 ## [0.1.0] — 2026-08-08
 
@@ -82,5 +131,6 @@ First release.
 - Passkeys and SAML generate settings and dependencies but no routes yet.
   Passkeys is off in every preset; SAML is enabled by the `enterprise` preset.
 
-[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.1.0

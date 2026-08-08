@@ -160,7 +160,7 @@ def test_embedded_db_module_adopts_the_host() -> None:
 def test_no_secret_literals_in_the_template() -> None:
     """Secrets are generated at post-gen time and must never live in the repo."""
     pattern = re.compile(
-        r"(SECRET_KEY|JWT_SECRET|CSRF_SECRET|REFRESH_TOKEN_SECRET)\s*[:=]\s*[\"'][^\"'{}\s]{8,}",
+        r"SECRET_KEY\s*[:=]\s*[\"'][^\"'{}\s]{8,}",
     )
     offenders = []
     for path in PROJECT_ROOT.rglob("*"):

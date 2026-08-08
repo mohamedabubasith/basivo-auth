@@ -48,10 +48,11 @@ def build_env(answers: ProjectAnswers) -> dict[str, str]:
     env: dict[str, str] = {
         "ENVIRONMENT": "development",
         "DEBUG": "true",
+        # One secret. JWT signing, CSRF signing, reset and verification
+        # tokens, OAuth state and TOTP encryption are all derived from it with
+        # HKDF at runtime, so there is nothing else for an operator to set,
+        # forget, or accidentally reuse across environments.
         "SECRET_KEY": _new_secret(),
-        "JWT_SECRET": _new_secret(),
-        "REFRESH_TOKEN_SECRET": _new_secret(),
-        "CSRF_SECRET": _new_secret(),
         "ACCESS_TOKEN_TTL_SECONDS": str(answers.access_token_ttl_seconds),
         "REFRESH_TOKEN_TTL_SECONDS": str(answers.refresh_token_ttl_seconds),
         "PUBLIC_BASE_URL": "http://localhost:8000",
@@ -363,7 +364,7 @@ def rotate_secrets(project: Path) -> list[str]:
             continue
         key, _, _ = line.partition("=")
         key = key.strip()
-        if key in {"SECRET_KEY", "JWT_SECRET", "REFRESH_TOKEN_SECRET", "CSRF_SECRET"}:
+        if key == "SECRET_KEY":
             output.append(f"{key}={_new_secret()}")
             rotated.append(key)
         else:
