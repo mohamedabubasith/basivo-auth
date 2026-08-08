@@ -29,7 +29,18 @@ htmlcov/
 *.tfvars
 !template/**/*.tfvars.jinja
 
-# --- editors / os -----------------------------------------------------------
+# --- ai assistants / editors ------------------------------------------------
+# Local assistant config and instruction files: personal to each developer and
+# not part of the tool.
+.claude/
+CLAUDE.md
+AGENTS.md
+AGENT.md
+.cursor/
+.cursorrules
+.aider*
+.github/copilot-instructions.md
+
 .idea/
 .vscode/
 .DS_Store

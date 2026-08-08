@@ -271,35 +271,50 @@ def install_dependencies(project: Path, answers: ProjectAnswers, report: PostGen
 
 
 def format_code(project: Path, report: PostGenReport) -> None:
-    """Run `ruff format` over the generated project.
+    """Normalise the generated Python with ruff.
 
-    A Jinja template cannot emit byte-identical output to what `ruff format`
-    would produce for every feature combination — conditional blocks change line
-    lengths and trailing commas. Formatting once here means the generated CI's
-    `ruff format --check` step passes on the very first run, instead of failing
-    on a project the developer has not touched yet.
+    Runs `ruff format` and then `ruff check --fix --select I` (import sorting).
 
-    Best effort: a formatting failure is cosmetic and must not fail generation.
+    This is not cosmetic. Jinja's whitespace handling interacts with every
+    conditional block, so the exact number of blank lines a template emits
+    depends on which features are switched on. No hand-tuned template is
+    correct for all of them — verified the hard way — so the output is
+    normalised mechanically instead. Without this, a project generated with
+    certain feature combinations fails its own CI lint on the first run.
+
+    Uses the project's own venv when dependencies were installed, otherwise
+    falls back to `uvx ruff`, so `--no-install` still produces clean output.
     """
     uv = shutil.which("uv")
     if uv is None:
+        report.warnings.append("uv not found; run `ruff format . && ruff check --fix .`")
         return
 
-    proc = subprocess.run(
-        [uv, "run", "--no-sync", "ruff", "format", "."],
-        cwd=project,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-        env=os.environ | {"UV_NO_PROGRESS": "1"},
-    )
-    if proc.returncode == 0:
-        report.formatted = True
-    else:
-        report.warnings.append(
-            "`ruff format` did not run; format manually with `uv run ruff format .`"
+    in_venv = (project / ".venv").is_dir()
+    prefix = [uv, "run", "--no-sync", "ruff"] if in_venv else [uv, "tool", "run", "ruff"]
+
+    commands = [
+        [*prefix, "format", "."],
+        [*prefix, "check", "--fix", "--select", "I", "."],
+    ]
+
+    for command in commands:
+        proc = subprocess.run(
+            command,
+            cwd=project,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+            env=os.environ | {"UV_NO_PROGRESS": "1"},
         )
+        if proc.returncode not in (0, 1):  # 1 == ruff found issues it fixed
+            report.warnings.append(
+                "`ruff` did not run; format manually with `ruff format . && ruff check --fix .`"
+            )
+            return
+
+    report.formatted = True
 
 
 def format_terraform(project: Path, report: PostGenReport) -> None:
@@ -371,9 +386,8 @@ def run_all(
     write_env_files(project, answers, report)
     if do_install:
         install_dependencies(project, answers, report)
-        if report.dependencies_installed:
-            # Needs the project venv, so only after a successful sync.
-            format_code(project, report)
+    # Always: the generated output must lint clean even with --no-install.
+    format_code(project, report)
     format_terraform(project, report)
     # Git last: the tree must be final before the initial commit is taken.
     if do_git:

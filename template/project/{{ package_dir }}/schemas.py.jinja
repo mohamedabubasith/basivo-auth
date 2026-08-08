@@ -20,19 +20,7 @@ from {{ package_module }}.engine.types import BaseUser, BaseUserCreate, BaseUser
 from {{ package_module }}.settings import get_settings
 {%- endif %}
 
-{% if feature_orgs -%}
-#: Slugs that would collide with an API path segment, or read as first-party if
-#: the frontend routes tenants by subdomain.
-RESERVED_ORG_SLUGS = frozenset(
-    {
-        "admin", "api", "app", "auth", "billing", "docs", "health", "help",
-        "internal", "login", "mail", "new", "orgs", "root", "settings",
-        "signup", "static", "status", "support", "system", "users", "www",
-    }
-)
 
-
-{% endif -%}
 class UserRead(BaseUser[uuid.UUID]):
     """Safe projection of a user."""
 
@@ -214,6 +202,17 @@ class SSOProvider(BaseModel):
 # ---------------------------------------------------------------------------
 # Organisations and membership
 # ---------------------------------------------------------------------------
+
+#: Slugs that would collide with an API path segment, or read as first-party if
+#: the frontend routes tenants by subdomain.
+RESERVED_ORG_SLUGS = frozenset(
+    {
+        "admin", "api", "app", "auth", "billing", "docs", "health", "help",
+        "internal", "login", "mail", "new", "orgs", "root", "settings",
+        "signup", "static", "status", "support", "system", "users", "www",
+    }
+)
+
 
 
 class OrganizationCreate(BaseModel):
