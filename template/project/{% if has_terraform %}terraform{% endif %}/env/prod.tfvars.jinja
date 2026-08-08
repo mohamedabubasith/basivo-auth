@@ -1,0 +1,32 @@
+environment = "prod"
+aws_region  = "us-east-1"
+
+# Must be https. The service refuses to start otherwise.
+public_base_url   = "https://auth.example.com"
+frontend_base_url = "https://app.example.com"
+cors_origins      = ["https://app.example.com"]
+
+multi_az           = true
+single_nat_gateway = false
+db_instance_class  = "db.t4g.small"
+{%- if has_ecs %}
+
+# Required in prod: without a certificate the ALB serves plain HTTP.
+certificate_arn = ""
+
+ecs_desired_count = 2
+ecs_min_capacity  = 2
+ecs_max_capacity  = 10
+{%- endif %}
+{%- if has_lambda %}
+
+# 1769 MB is one full vCPU. Below ~1024 MB Argon2 makes logins noticeably slow.
+lambda_memory_mb = 1769
+{%- endif %}
+
+# SMTP and OAuth credentials. Prefer passing these from your secret store
+# rather than committing them here.
+extra_settings = {
+  # SMTP_HOST = "email-smtp.us-east-1.amazonaws.com"
+  # SMTP_USER = ""
+}

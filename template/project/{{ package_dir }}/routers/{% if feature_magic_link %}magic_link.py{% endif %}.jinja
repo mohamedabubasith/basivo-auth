@@ -1,0 +1,157 @@
+"""Passwordless sign-in by emailed link.
+
+A magic link is a bearer credential delivered over email, so it is treated as
+one: short TTL, single use enforced in Redis, and the token travels in a POST
+body from the frontend rather than being consumed directly from the GET the
+user clicks. That last point matters — a token in a URL ends up in browser
+history, in `Referer` headers to third-party assets, and in access logs.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from {{ package_module }}.db import get_async_session
+from {{ package_module }}.email.sender import send_magic_link_email
+from {{ package_module }}.engine import UserManager, get_user_manager
+from {{ package_module }}.engine.types import UserNotExists
+from {{ package_module }}.models import User
+from {{ package_module }}.routers.session import issue_session
+from {{ package_module }}.schemas import ForgotPasswordRequest, MessageResponse, TokenResponse
+{% if uses_redis -%}
+from {{ package_module }}.security import redis_client, tokens
+{%- else -%}
+from {{ package_module }}.security import store, tokens
+{%- endif %}
+from {{ package_module }}.security.audit import AuditAction, Outcome, record
+from {{ package_module }}.security.crypto import sha256_hex
+from {{ package_module }}.security.ratelimit import client_ip, limiter
+
+router = APIRouter(prefix="/auth/magic", tags=["magic-link"])
+
+MAGIC_LINK_TTL_SECONDS = 900
+GENERIC_MESSAGE = "If an account exists for that address, a sign-in link has been sent."
+
+
+class MagicLinkConsume(BaseModel):
+    token: str
+
+
+def _used_key(jti: str) -> str:
+{%- if uses_redis %}
+    from {{ package_module }}.security.redis_client import namespaced
+
+    return namespaced("magic", "used", jti)
+{%- else %}
+    return store.namespaced("magic", "used", jti)
+{%- endif %}
+
+
+@router.post("/request", response_model=MessageResponse, status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("3/15minutes")
+async def request_link(
+    request: Request,
+    response: Response,
+    payload: ForgotPasswordRequest,
+    manager: UserManager = Depends(get_user_manager),
+    session: AsyncSession = Depends(get_async_session),
+) -> MessageResponse:
+    """Email a sign-in link. Response is identical for unknown addresses."""
+    try:
+        user = await manager.get_by_email(payload.email)
+    except UserNotExists:
+        return MessageResponse(detail=GENERIC_MESSAGE)
+
+    if not user.is_active:
+        return MessageResponse(detail=GENERIC_MESSAGE)
+
+    token, _ = tokens.create_purpose_token(
+        user.id,
+        token_type=tokens.TokenType.MAGIC_LINK,
+        ttl_seconds=MAGIC_LINK_TTL_SECONDS,
+    )
+    await send_magic_link_email(user.email, token)
+    await record(
+        session,
+        action=AuditAction.MAGIC_LINK_SENT,
+        outcome=Outcome.SUCCESS,
+        user_id=user.id,
+        ip_address=client_ip(request),
+        commit=True,
+    )
+    return MessageResponse(detail=GENERIC_MESSAGE)
+
+
+@router.post("/consume", response_model=TokenResponse)
+@limiter.limit("10/15minutes")
+async def consume_link(
+    request: Request,
+    response: Response,
+    payload: MagicLinkConsume,
+    session: AsyncSession = Depends(get_async_session),
+) -> TokenResponse:
+    """Exchange a magic-link token for a session."""
+    try:
+        claims = tokens.decode_purpose_token(
+            payload.token, expected_type=tokens.TokenType.MAGIC_LINK
+        )
+    except tokens.TokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This link is invalid or has expired. Request a new one.",
+        ) from exc
+
+    # Single-use enforcement. The JWT itself cannot be invalidated, so its jti
+    # is burned for the token's own lifetime. Set-if-absent, so two concurrent
+    # clicks resolve to exactly one winner rather than both passing a
+    # check-then-write race.
+{%- if uses_redis %}
+    claimed = await redis_client.get_redis().set(
+        _used_key(sha256_hex(claims.jti)), "1", ex=MAGIC_LINK_TTL_SECONDS, nx=True
+    )
+{%- else %}
+    claimed = await store.claim(
+        session, _used_key(sha256_hex(claims.jti)), ttl_seconds=MAGIC_LINK_TTL_SECONDS
+    )
+{%- endif %}
+    if not claimed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This link has already been used. Request a new one.",
+        )
+
+    user = await session.get(User, claims.subject)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This link is invalid or has expired. Request a new one.",
+        )
+
+{%- if feature_totp %}
+    if user.totp_enabled:
+        step_up_token, _ = tokens.create_purpose_token(
+            user.id, token_type=tokens.TokenType.STEP_UP, ttl_seconds=300
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Two-factor authentication required.",
+            headers={"X-Step-Up-Token": step_up_token, "X-Step-Up-Methods": "totp"},
+        )
+{%- endif %}
+
+    # Clicking a link sent to the address proves control of it.
+    if not user.is_verified:
+        user.is_verified = True
+
+    session_payload = await issue_session(session, user, request, response)
+    await record(
+        session,
+        action=AuditAction.MAGIC_LINK_CONSUMED,
+        outcome=Outcome.SUCCESS,
+        user_id=user.id,
+        ip_address=client_ip(request),
+    )
+    await session.commit()
+    return session_payload

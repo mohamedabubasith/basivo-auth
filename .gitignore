@@ -1,0 +1,35 @@
+# --- secrets: never commit --------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+
+# --- tooling ----------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- terraform (only relevant to generated projects, kept for safety) --------
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!template/**/*.tfvars.jinja
+
+# --- editors / os -----------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store

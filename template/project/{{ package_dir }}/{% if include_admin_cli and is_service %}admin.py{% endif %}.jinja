@@ -1,0 +1,282 @@
+"""Operator CLI: ``uv run {{ project_slug }} <command>``.
+
+Deliberately narrow. It covers the operations you genuinely cannot do through
+the API — bootstrapping the first superuser, unlocking an account, cutting off
+a compromised session — and nothing else. Every action writes an audit row with
+actor ``cli``, because "an admin did it by hand" is the hardest kind of change
+to reconstruct after an incident.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+from datetime import UTC, datetime
+from functools import wraps
+from typing import Annotated, Any
+
+import typer
+from rich.console import Console
+from rich.table import Table
+from sqlalchemy import func, select
+
+from {{ package_module }}.db import async_session_maker, dispose_engine
+from {{ package_module }}.models import AuditEvent, RefreshToken, User
+{%- if uses_redis %}
+from {{ package_module }}.security import redis_client, tokens
+{%- else %}
+from {{ package_module }}.security import tokens
+{%- endif %}
+from {{ package_module }}.security.audit import AuditAction, Outcome, record
+from {{ package_module }}.security.passwords import hash_password, validate
+{%- if uses_redis %}
+from {{ package_module }}.security.redis_client import close_redis
+{%- endif %}
+
+cli = typer.Typer(help="{{ project_name }} operator commands.", no_args_is_help=True)
+console = Console()
+
+
+def coro(func_: Callable[..., Any]) -> Callable[..., Any]:
+    """Let Typer commands be async without each one managing its own loop."""
+
+    @wraps(func_)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        async def runner() -> Any:
+            try:
+                return await func_(*args, **kwargs)
+            finally:
+{%- if uses_redis %}
+                await close_redis()
+{%- endif %}
+                await dispose_engine()
+
+        return asyncio.run(runner())
+
+    return wrapper
+
+
+@cli.command("create-superuser")
+@coro
+async def create_superuser(
+    email: Annotated[str, typer.Option(prompt=True)],
+    password: Annotated[
+        str, typer.Option(prompt=True, hide_input=True, confirmation_prompt=True)
+    ],
+) -> None:
+    """Create a verified superuser.
+
+    The password is prompted, never taken as an argument: command-line
+    arguments land in shell history and are visible in the process table to
+    every other user on the machine.
+    """
+    email = email.strip().lower()
+    result = await validate(password, email=email)
+    if not result.ok:
+        console.print(f"[red]Rejected:[/red] {' '.join(result.errors)}")
+        raise typer.Exit(1)
+
+    async with async_session_maker() as session:
+        existing = await session.execute(select(User).where(User.email == email))
+        if existing.scalar_one_or_none() is not None:
+            console.print(f"[red]A user with {email} already exists.[/red]")
+            raise typer.Exit(1)
+
+        user = User(
+            email=email,
+            hashed_password=hash_password(password),
+            is_active=True,
+            is_superuser=True,
+            is_verified=True,
+            password_changed_at=datetime.now(UTC),
+        )
+        session.add(user)
+        await session.flush()
+        await record(
+            session,
+            action=AuditAction.REGISTER,
+            outcome=Outcome.SUCCESS,
+            user_id=user.id,
+            detail={"actor": "cli", "superuser": True},
+        )
+        await session.commit()
+
+    console.print(f"[green]✓[/green] Superuser created: {email}")
+
+
+@cli.command("unlock")
+@coro
+async def unlock(email: Annotated[str, typer.Argument(help="Account to unlock.")]) -> None:
+    """Clear lockout counters for an account."""
+    from {{ package_module }}.security import lockout
+
+    email = email.strip().lower()
+{%- if uses_redis %}
+    await lockout.reset(redis_client.get_redis(), identifier=email)
+{%- endif %}
+
+    async with async_session_maker() as session:
+{%- if not uses_redis %}
+        await lockout.reset(session, identifier=email)
+{%- endif %}
+        user = (
+            await session.execute(select(User).where(User.email == email))
+        ).scalar_one_or_none()
+        if user is not None:
+            user.failed_login_count = 0
+            user.locked_until = None
+            await session.commit()
+
+    console.print(f"[green]✓[/green] Lockout cleared for {email}")
+
+
+@cli.command("revoke-sessions")
+@coro
+async def revoke_sessions(
+    email: Annotated[str, typer.Argument(help="Account whose sessions to revoke.")],
+) -> None:
+    """Sign an account out everywhere.
+
+    The first move when an account is suspected compromised: it invalidates
+    every refresh token, so the attacker cannot mint further access tokens.
+    Access tokens already issued survive until they expire — which is why the
+    access TTL is minutes.
+    """
+    email = email.strip().lower()
+    async with async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.email == email))
+        ).scalar_one_or_none()
+        if user is None:
+            console.print(f"[red]No user with {email}.[/red]")
+            raise typer.Exit(1)
+
+        count = await tokens.revoke_all_for_user(
+            session, user.id, reason=tokens.RevocationReason.ADMIN
+        )
+        await record(
+            session,
+            action=AuditAction.LOGOUT,
+            outcome=Outcome.SUCCESS,
+            user_id=user.id,
+            detail={"actor": "cli", "revoked": count},
+        )
+        await session.commit()
+
+    console.print(f"[green]✓[/green] Revoked {count} session(s) for {email}")
+    console.print(
+        "[dim]Access tokens already issued remain valid until they expire "
+        "(access TTL). Deactivate the account to cut them off immediately.[/dim]"
+    )
+
+
+@cli.command("deactivate")
+@coro
+async def deactivate(email: Annotated[str, typer.Argument()]) -> None:
+    """Disable an account and revoke its sessions."""
+    email = email.strip().lower()
+    async with async_session_maker() as session:
+        user = (
+            await session.execute(select(User).where(User.email == email))
+        ).scalar_one_or_none()
+        if user is None:
+            console.print(f"[red]No user with {email}.[/red]")
+            raise typer.Exit(1)
+
+        user.is_active = False
+        await tokens.revoke_all_for_user(session, user.id, reason=tokens.RevocationReason.ADMIN)
+        await session.commit()
+
+    console.print(f"[green]✓[/green] {email} deactivated and signed out.")
+
+
+@cli.command("audit")
+@coro
+async def show_audit(
+    email: Annotated[str | None, typer.Option(help="Filter by account.")] = None,
+    limit: Annotated[int, typer.Option(help="Rows to show.")] = 25,
+) -> None:
+    """Show recent audit events."""
+    async with async_session_maker() as session:
+        statement = select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(limit)
+        if email:
+            user = (
+                await session.execute(select(User).where(User.email == email.strip().lower()))
+            ).scalar_one_or_none()
+            if user is None:
+                console.print(f"[red]No user with {email}.[/red]")
+                raise typer.Exit(1)
+            statement = statement.where(AuditEvent.user_id == user.id)
+
+        rows = (await session.execute(statement)).scalars().all()
+
+    table = Table(title="Audit events", header_style="bold cyan")
+    table.add_column("when", style="dim")
+    table.add_column("action")
+    table.add_column("outcome")
+    table.add_column("ip", style="dim")
+    for row in rows:
+        style = {"success": "green", "failure": "yellow", "blocked": "red"}.get(row.outcome, "")
+        table.add_row(
+            row.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            row.action,
+            f"[{style}]{row.outcome}[/{style}]" if style else row.outcome,
+            row.ip_address or "-",
+        )
+    console.print(table)
+
+
+@cli.command("prune-tokens")
+@coro
+async def prune_tokens(
+    older_than_days: Annotated[
+        int, typer.Option(help="Delete rows expired longer ago than this.")
+    ] = 30,
+) -> None:
+    """Delete long-expired refresh tokens. Run on a schedule."""
+    async with async_session_maker() as session:
+        deleted = await tokens.prune_expired(session, older_than_days=older_than_days)
+        await session.commit()
+    console.print(f"[green]✓[/green] Pruned {deleted} expired refresh token row(s).")
+
+
+@cli.command("stats")
+@coro
+async def stats() -> None:
+    """Quick health snapshot."""
+    async with async_session_maker() as session:
+        users = await session.scalar(select(func.count()).select_from(User))
+        active = await session.scalar(
+            select(func.count()).select_from(User).where(User.is_active.is_(True))
+        )
+        verified = await session.scalar(
+            select(func.count()).select_from(User).where(User.is_verified.is_(True))
+        )
+        live_sessions = await session.scalar(
+            select(func.count()).select_from(RefreshToken).where(RefreshToken.revoked_at.is_(None))
+        )
+        reuse_events = await session.scalar(
+            select(func.count())
+            .select_from(AuditEvent)
+            .where(AuditEvent.action == AuditAction.TOKEN_REUSE_DETECTED.value)
+        )
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_row("users", str(users))
+    table.add_row("active", str(active))
+    table.add_row("verified", str(verified))
+    table.add_row("live sessions", str(live_sessions))
+    table.add_row(
+        "token reuse events",
+        f"[red]{reuse_events}[/red]" if reuse_events else "0",
+    )
+    console.print(table)
+    if reuse_events:
+        console.print(
+            "[yellow]Refresh token reuse has been detected at least once. "
+            "Review the audit log — this indicates token theft.[/yellow]"
+        )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    cli()

@@ -1,0 +1,9 @@
+{{ project_name }}
+
+Click below to sign in. No password needed.
+
+{{ action_url }}
+
+Expires in {{ expires_minutes }} minutes and works once.
+
+Anyone with this link can sign in as you until it expires. Do not forward it.

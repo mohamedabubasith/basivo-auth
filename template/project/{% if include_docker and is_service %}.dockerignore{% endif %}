@@ -1,0 +1,29 @@
+# Keep secrets and local state out of the build context entirely. Anything
+# copied in remains recoverable from the image layers even if a later
+# instruction deletes it.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+.git/
+.github/
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+*.db
+*.sqlite3
+
+tests/
+docs/
+README.md
+.copier-answers.yml

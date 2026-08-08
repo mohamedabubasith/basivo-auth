@@ -1,0 +1,16 @@
+environment = "dev"
+aws_region  = "us-east-1"
+
+public_base_url   = "http://localhost:8000"
+frontend_base_url = "http://localhost:3000"
+cors_origins      = ["http://localhost:3000"]
+
+# Cheapest workable dev footprint.
+multi_az           = false
+single_nat_gateway = true
+db_instance_class  = "db.t4g.micro"
+{%- if has_ecs %}
+
+ecs_desired_count = 1
+ecs_min_capacity  = 1
+{%- endif %}

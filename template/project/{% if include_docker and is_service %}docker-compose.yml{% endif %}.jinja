@@ -1,0 +1,58 @@
+name: {{ project_slug }}
+
+services:
+{%- if database == 'postgres' %}
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-{{ package_name }}}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-{{ package_name }}}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-{{ package_name }}}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+{%- endif %}
+
+  redis:
+    image: redis:7-alpine
+    # No persistence: everything Redis holds here (OTP codes, rate-limit
+    # counters, lockout state) is short-lived and safe to lose on restart.
+    command: redis-server --save "" --appendonly no --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+{%- if email_provider == 'smtp' %}
+
+  mailpit:
+    # Catches every outbound email locally. Without it, development either sends
+    # real mail to real addresses or silently drops it.
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:1025:1025"   # SMTP
+      - "127.0.0.1:8025:8025"   # web UI
+    environment:
+      MP_MAX_MESSAGES: 500
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+{%- endif %}
+
+# Ports are bound to 127.0.0.1 rather than 0.0.0.0 so a laptop on a shared or
+# public network is not exposing an unauthenticated database to it.
+
+volumes:
+{%- if database == 'postgres' %}
+  postgres_data:
+{%- else %}
+  {}
+{%- endif %}

@@ -1,0 +1,103 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "basivo-auth"
+version = "0.1.0"
+description = "Scaffold production-hardened FastAPI authentication services."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Basivo" }]
+keywords = ["fastapi", "authentication", "scaffold", "cli", "copier"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: System :: Systems Administration :: Authentication/Directory",
+]
+
+dependencies = [
+    "typer>=0.15.0",
+    "rich>=13.9.0",
+    "copier>=9.4.0",
+    "pydantic>=2.10.0",
+    "packaging>=24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    # tests/test_template.py reads copier.yml to assert the answer contract.
+    "pyyaml>=6.0.2",
+    "types-pyyaml>=6.0.12",
+]
+
+[project.scripts]
+basivo-auth = "basivo_auth.cli:app"
+
+[project.urls]
+Homepage = "https://github.com/basivo/basivo-auth"
+Issues = "https://github.com/basivo/basivo-auth/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/basivo_auth"]
+
+# A copy of the template ships inside the wheel as an offline fallback
+# (`basivo-auth new --local`). The default generation path uses the git URL so
+# that `copier update` has tags to compare against.
+[tool.hatch.build.targets.wheel.force-include]
+"copier.yml" = "basivo_auth/_bundled/copier.yml"
+"template" = "basivo_auth/_bundled/template"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/basivo_auth", "template", "copier.yml", "README.md", "LICENSE"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+extend-exclude = ["template"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "S",        # bandit
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "S603",  # subprocess call - we validate args ourselves
+    "S607",  # partial executable path - we resolve via shutil.which
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # assert is fine in tests
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+exclude = ["^template/"]
+
+[[tool.mypy.overrides]]
+module = ["copier.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"

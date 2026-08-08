@@ -1,0 +1,238 @@
+variable "aws_region" {
+  type        = string
+  description = "Region to deploy into."
+  default     = "us-east-1"
+}
+
+variable "environment" {
+  type        = string
+  description = "Environment name. `prod` switches on deletion protection, longer backups and Performance Insights."
+
+  validation {
+    condition     = contains(["dev", "staging", "prod"], var.environment)
+    error_message = "environment must be dev, staging or prod."
+  }
+}
+
+variable "vpc_cidr" {
+  type    = string
+  default = "10.0.0.0/16"
+}
+
+variable "single_nat_gateway" {
+  type        = bool
+  description = "Share one NAT gateway across AZs. Cheaper, but a single AZ failure takes out egress."
+  default     = true
+}
+
+variable "multi_az" {
+  type        = bool
+  description = "Run the database{% if uses_redis %} and cache{% endif %} across two AZs. Roughly doubles their cost."
+  default     = false
+}
+
+#############################################################################
+# Application
+#############################################################################
+
+variable "public_base_url" {
+  type        = string
+  description = "Where this API is reachable. Must be https outside dev — the service refuses to start otherwise."
+}
+
+variable "frontend_base_url" {
+  type        = string
+  description = "Where your user-facing app lives. Password reset and verification links point here."
+}
+
+variable "cors_origins" {
+  type        = list(string)
+  description = "Exact frontend origins. A wildcard is rejected at startup when credentials are allowed."
+}
+
+variable "extra_settings" {
+  type        = map(string)
+  description = "Additional environment values merged into the secret (SMTP credentials, OAuth client IDs)."
+  default     = {}
+  sensitive   = true
+}
+
+#############################################################################
+# Database
+#############################################################################
+
+variable "db_name" {
+  type    = string
+  default = "{{ package_name }}"
+}
+
+variable "db_username" {
+  type    = string
+  default = "{{ package_name }}"
+}
+
+variable "postgres_version" {
+  type    = string
+  default = "17.2"
+}
+
+variable "db_instance_class" {
+  type        = string
+  description = "Argon2 verification is CPU-bound on the app side, not here; this sizes for connections and IO."
+  default     = "db.t4g.micro"
+}
+
+variable "db_allocated_storage" {
+  type    = number
+  default = 20
+}
+
+variable "db_max_allocated_storage" {
+  type        = number
+  description = "Storage autoscaling ceiling. The audit table grows steadily."
+  default     = 100
+}
+
+{% if has_lambda -%}
+variable "use_rds_proxy" {
+  type        = bool
+  description = <<-EOT
+    Pool connections outside the application.
+
+    Effectively required for Lambda: each concurrent invocation holds its own
+    connection, so without the proxy a traffic spike exhausts Postgres.
+  EOT
+  default     = true
+}
+{%- endif %}
+
+{% if uses_redis -%}
+#############################################################################
+# Cache
+#############################################################################
+
+variable "redis_version" {
+  type    = string
+  default = "7.1"
+}
+
+variable "redis_node_type" {
+  type    = string
+  default = "cache.t4g.micro"
+}
+
+{% endif -%}
+{% if has_ecs -%}
+#############################################################################
+# ECS
+#############################################################################
+
+variable "container_image" {
+  type        = string
+  description = "Image URI. Defaults to the generated ECR repository at the `latest` tag."
+  default     = ""
+}
+
+variable "ecs_cpu" {
+  type        = number
+  description = "CPU units. Argon2 is CPU-bound, so this is the dial that sets login latency."
+  default     = 512
+}
+
+variable "ecs_memory" {
+  type        = number
+  description = "MiB. Argon2 uses 64 MiB per in-flight hash on top of the app itself."
+  default     = 1024
+}
+
+variable "ecs_desired_count" {
+  type    = number
+  default = 2
+}
+
+variable "ecs_min_capacity" {
+  type    = number
+  default = 2
+}
+
+variable "ecs_max_capacity" {
+  type    = number
+  default = 10
+}
+
+variable "certificate_arn" {
+  type        = string
+  description = "ACM certificate for HTTPS. Without it the ALB serves plain HTTP, which the service rejects in prod."
+  default     = ""
+}
+
+{% endif -%}
+{% if has_lambda -%}
+#############################################################################
+# Lambda
+#############################################################################
+
+variable "lambda_memory_mb" {
+  type        = number
+  description = <<-EOT
+    Lambda allocates CPU proportionally to memory, and Argon2 is CPU-bound.
+    Below ~1024 MB logins get slow enough to notice; 1769 MB is a full vCPU.
+    Raising this often *lowers* cost, because the function finishes sooner.
+    See docs/security.md for measured numbers.
+  EOT
+  default     = 1024
+
+  validation {
+    condition     = var.lambda_memory_mb >= 512
+    error_message = "Argon2 needs 64 MiB per hash plus the runtime; below 512 MB the function will fail under concurrency."
+  }
+}
+
+variable "lambda_timeout_seconds" {
+  type        = number
+  description = "Generous enough for a cold start plus a slow Argon2 verification."
+  default     = 30
+}
+
+variable "lambda_reserved_concurrency" {
+  type        = number
+  description = <<-EOT
+    Cap on concurrent executions. -1 leaves it unreserved.
+
+    Worth setting even with RDS Proxy in front: it bounds how much load the
+    function can put on the database during a traffic spike or an attack.
+  EOT
+  default     = -1
+}
+
+variable "api_throttle_burst" {
+  type        = number
+  description = <<-EOT
+    API Gateway burst limit.
+{%- if not uses_redis %}
+    This build has no Redis, so in-application rate limiting is per-process and
+    resets on every cold start. Edge throttling is your real limit — treat these
+    numbers as the security control, not a convenience.
+{%- endif %}
+  EOT
+  default     = 100
+}
+
+variable "api_throttle_rate" {
+  type        = number
+  description = "API Gateway steady-state requests per second."
+  default     = 50
+}
+
+variable "enable_waf" {
+  type        = bool
+  description = "Attach a WAF with an IP-based rate rule in front of the API."
+  default     = true
+}
+
+variable "waf_rate_limit" {
+  type        = number
+  description = "Requests per 5 minutes per IP before WAF blocks. AWS enforces a 100 minimum."
+  default     = 2000
+}
+{%- endif %}

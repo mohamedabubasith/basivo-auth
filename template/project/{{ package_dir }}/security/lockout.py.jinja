@@ -1,0 +1,187 @@
+"""Progressive account lockout.
+
+Lockout is deliberately *temporary and exponential* rather than permanent.
+A permanent lock turns a rate-limit control into a denial-of-service weapon:
+anyone who knows a victim's email can lock them out indefinitely. Exponential
+backoff makes online guessing hopeless while self-healing for the real user.
+
+Counters are keyed by both account and client IP. The account key stops
+credential stuffing against one user; the IP key stops one host spraying many
+accounts.
+{% if not uses_redis %}
+State lives in the SQL database (``security/store.py``) rather than Redis. That
+costs one indexed lookup on the login path, which is immaterial next to the
+Argon2 verification happening on the same request.
+{%- endif %}
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import structlog
+{% if uses_redis -%}
+from redis.asyncio import Redis
+{%- else -%}
+from sqlalchemy.ext.asyncio import AsyncSession
+{%- endif %}
+
+{% if uses_redis -%}
+from {{ package_module }}.security.redis_client import namespaced
+{%- else -%}
+from {{ package_module }}.security import store
+from {{ package_module }}.security.crypto import sha256_hex
+{%- endif %}
+from {{ package_module }}.settings import get_settings
+
+logger = structlog.get_logger(__name__)
+
+
+
+@dataclass(frozen=True, slots=True)
+class LockoutState:
+    locked: bool
+    retry_after_seconds: int = 0
+    failure_count: int = 0
+
+
+def _account_key(identifier: str) -> str:
+{%- if uses_redis %}
+    return namespaced("lockout", "account", identifier.lower())
+{%- else %}
+    # Hashed: these rows are queryable by anyone with database access, and a
+    # plaintext key column would be a user directory.
+    digest = sha256_hex(identifier.strip().lower())[:32]
+    return store.namespaced("lockout", "account", digest)
+{%- endif %}
+
+
+def _ip_key(ip_address: str) -> str:
+{%- if uses_redis %}
+    return namespaced("lockout", "ip", ip_address)
+{%- else %}
+    return store.namespaced("lockout", "ip", sha256_hex(ip_address)[:32])
+{%- endif %}
+
+
+def _backoff_seconds(failures: int) -> int:
+    """Exponential backoff, capped.
+
+    With the defaults (threshold 5, base 60s, cap 3600s) the delays run
+    60s, 120s, 240s … so ten failures already cost over an hour, while a user
+    who mistypes twice notices nothing.
+    """
+    settings = get_settings()
+    if failures < settings.lockout_threshold:
+        return 0
+    excess = failures - settings.lockout_threshold
+    delay = settings.lockout_base_seconds * (2**excess)
+    return int(min(delay, settings.lockout_max_seconds))
+
+
+async def check(
+    store_: {% if uses_redis %}Redis[str]{% else %}AsyncSession{% endif %},
+    *,
+    identifier: str,
+    ip_address: str | None = None,
+) -> LockoutState:
+    """Report whether this identifier or IP is currently locked out."""
+    keys = [_account_key(identifier)]
+    if ip_address:
+        keys.append(_ip_key(ip_address))
+
+    worst = LockoutState(locked=False)
+    for key in keys:
+{%- if uses_redis %}
+        remaining = await store_.ttl(f"{key}:until")
+        if remaining and remaining > 0:
+            failures = int(await store_.get(key) or 0)
+{%- else %}
+        remaining = await store.ttl(store_, f"{key}:until")
+        if remaining > 0:
+            counter = await store.get(store_, key)
+            failures = int(counter.value) if counter else 0
+{%- endif %}
+            if remaining > worst.retry_after_seconds:
+                worst = LockoutState(
+                    locked=True, retry_after_seconds=remaining, failure_count=failures
+                )
+    return worst
+
+
+async def record_failure(
+    store_: {% if uses_redis %}Redis[str]{% else %}AsyncSession{% endif %},
+    *,
+    identifier: str,
+    ip_address: str | None = None,
+) -> LockoutState:
+    """Count a failed attempt and apply backoff once the threshold is crossed."""
+    settings = get_settings()
+    account_key = _account_key(identifier)
+    # The counter itself expires, so a user who fails twice today and once next
+    # week is never treated as a three-failure attacker.
+    window = settings.lockout_max_seconds * 2
+
+{%- if uses_redis %}
+
+    pipeline = store_.pipeline()
+    pipeline.incr(account_key)
+    pipeline.expire(account_key, window)
+    if ip_address:
+        pipeline.incr(_ip_key(ip_address))
+        pipeline.expire(_ip_key(ip_address), window)
+    results = await pipeline.execute()
+    failures = int(results[0])
+{%- else %}
+
+    async def _bump(key: str) -> int:
+        existing = await store.get(store_, key)
+        if existing is None:
+            await store.put(store_, key, value="1", ttl_seconds=window, attempts=1)
+            return 1
+        return await store.increment_attempts(store_, key)
+
+    failures = await _bump(account_key)
+    if ip_address:
+        await _bump(_ip_key(ip_address))
+{%- endif %}
+
+    delay = _backoff_seconds(failures)
+    if delay:
+{%- if uses_redis %}
+        await store_.set(f"{account_key}:until", "1", ex=delay)
+{%- else %}
+        await store.put(store_, f"{account_key}:until", value="1", ttl_seconds=delay)
+        await store_.commit()
+{%- endif %}
+        logger.warning(
+            "account_locked",
+            failure_count=failures,
+            retry_after_seconds=delay,
+            ip_address=ip_address,
+        )
+        return LockoutState(locked=True, retry_after_seconds=delay, failure_count=failures)
+
+{%- if not uses_redis %}
+    await store_.commit()
+{%- endif %}
+    return LockoutState(locked=False, failure_count=failures)
+
+
+async def reset(
+    store_: {% if uses_redis %}Redis[str]{% else %}AsyncSession{% endif %},
+    *,
+    identifier: str,
+    ip_address: str | None = None,
+) -> None:
+    """Clear counters after a successful authentication."""
+    account_key = _account_key(identifier)
+    keys = [account_key, f"{account_key}:until"]
+    if ip_address:
+        keys.append(_ip_key(ip_address))
+{%- if uses_redis %}
+    await store_.delete(*keys)
+{%- else %}
+    await store.drop(store_, *keys)
+    await store_.commit()
+{%- endif %}

@@ -1,0 +1,175 @@
+"""Short-lived security state, kept in the SQL database.
+
+The Redis-backed build stores lockout counters, one-time codes and single-use
+markers in Redis, where expiry is free. Without Redis those still need a home,
+and this module gives them one in the database you already run.
+
+Two things make that workable:
+
+* **Everything carries an explicit ``expires_at``.** SQL has no TTL, so expiry is
+  a predicate on every read (``expires_at > now()``) rather than something the
+  store does for us. Rows outlive their usefulness until :func:`purge_expired`
+  runs, which is why that is wired into the admin CLI.
+* **Nothing here is read on a hot path.** Login, OTP verification and magic-link
+  consumption are already doing password hashing or a database write, so one
+  more indexed lookup does not change their cost.
+
+Rate limiting deliberately does **not** live here. It would mean a write on
+every single request, which is the wrong shape for a relational database — see
+``security/ratelimit.py`` and the deployment notes in docs/security.md.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+from sqlalchemy import delete, select, update
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from {{ package_module }}.models import EphemeralState
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """SQLite returns naive datetimes; Postgres returns aware ones."""
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+async def get(session: AsyncSession, key: str) -> EphemeralState | None:
+    """Fetch a live entry, treating an expired row as absent."""
+    row = (
+        await session.execute(select(EphemeralState).where(EphemeralState.key == key))
+    ).scalar_one_or_none()
+
+    if row is None:
+        return None
+    if _as_utc(row.expires_at) <= _now():
+        # Expired but not yet purged. Indistinguishable from missing, which is
+        # what the Redis build gives us for free.
+        return None
+    return row
+
+
+async def put(
+    session: AsyncSession,
+    key: str,
+    *,
+    value: str,
+    ttl_seconds: int,
+    attempts: int = 0,
+) -> EphemeralState:
+    """Store an entry, replacing any existing one under the same key.
+
+    Replacing rather than accumulating matters for OTP: several live codes for
+    one address would multiply an attacker's chance per guess.
+    """
+    await session.execute(delete(EphemeralState).where(EphemeralState.key == key))
+    row = EphemeralState(
+        key=key,
+        value=value,
+        attempts=attempts,
+        created_at=_now(),
+        expires_at=_now() + timedelta(seconds=ttl_seconds),
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def claim(session: AsyncSession, key: str, *, ttl_seconds: int) -> bool:
+    """Set-if-absent. Returns True only for the first caller.
+
+    The single-use primitive behind magic links: the unique constraint on
+    ``key`` is what makes two concurrent requests resolve to one winner, rather
+    than a check-then-write race that both pass.
+    """
+    from sqlalchemy.exc import IntegrityError
+
+    existing = await get(session, key)
+    if existing is not None:
+        return False
+
+    # An expired row may still occupy the key.
+    await session.execute(delete(EphemeralState).where(EphemeralState.key == key))
+    session.add(
+        EphemeralState(
+            key=key,
+            value="1",
+            attempts=0,
+            created_at=_now(),
+            expires_at=_now() + timedelta(seconds=ttl_seconds),
+        )
+    )
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        return False
+    return True
+
+
+async def increment_attempts(session: AsyncSession, key: str) -> int:
+    """Add one to the attempt counter and return the new total.
+
+    Incremented in a single statement so parallel requests cannot each read the
+    same count and collectively overspend the budget.
+    """
+    result = await session.execute(
+        update(EphemeralState)
+        .where(EphemeralState.key == key)
+        .values(attempts=EphemeralState.attempts + 1)
+        .returning(EphemeralState.attempts)
+    )
+    row = result.scalar_one_or_none()
+    return int(row) if row is not None else 0
+
+
+async def drop(session: AsyncSession, *keys: str) -> None:
+    if keys:
+        await session.execute(delete(EphemeralState).where(EphemeralState.key.in_(keys)))
+
+
+async def ttl(session: AsyncSession, key: str) -> int:
+    """Seconds remaining, or 0 when absent or expired."""
+    row = await get(session, key)
+    if row is None:
+        return 0
+    return max(0, int((_as_utc(row.expires_at) - _now()).total_seconds()))
+
+
+async def purge_expired(session: AsyncSession) -> int:
+    """Delete rows past their expiry. Run on a schedule.
+
+    Without this the table grows forever: expiry is enforced on read, but
+    nothing removes the rows.
+    """
+    result = await session.execute(
+        delete(EphemeralState).where(EphemeralState.expires_at < _now())
+    )
+    return int(cast("CursorResult[Any]", result).rowcount or 0)
+
+
+def namespaced(*parts: str) -> str:
+    """Key builder, matching the Redis build's shape so call sites are identical."""
+    from {{ package_module }}.settings import get_settings
+
+    return ":".join((get_settings().jwt_issuer, *parts))
+
+
+__all__ = [
+    "claim",
+    "drop",
+    "get",
+    "increment_attempts",
+    "namespaced",
+    "purge_expired",
+    "put",
+    "ttl",
+    "uuid",
+]

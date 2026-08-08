@@ -1,0 +1,18 @@
+# Remote state. Copy to backend.tf and fill in.
+#
+# Terraform state for this stack contains the generated JWT and database
+# secrets in plaintext. Local state means those sit unencrypted on a laptop and
+# in whatever backs it up.
+#
+# Use an encrypted, versioned bucket with state locking before your first real
+# apply.
+
+terraform {
+  backend "s3" {
+    bucket       = "your-terraform-state-bucket"
+    key          = "auth/terraform.tfstate"
+    region       = "us-east-1"
+    encrypt      = true
+    use_lockfile = true
+  }
+}

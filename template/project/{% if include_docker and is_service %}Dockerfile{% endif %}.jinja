@@ -1,0 +1,70 @@
+# syntax=docker/dockerfile:1.9
+
+# ---- build ----------------------------------------------------------------
+FROM ghcr.io/astral-sh/uv:python{{ python_version }}-bookworm-slim AS builder
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
+
+WORKDIR /app
+
+{%- if feature_saml %}
+
+# python3-saml builds against xmlsec headers, which are only needed here.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential pkg-config libxml2-dev libxmlsec1-dev libxmlsec1-openssl \
+    && rm -rf /var/lib/apt/lists/*
+{%- endif %}
+
+# Dependencies are installed from the lockfile alone, before the source is
+# copied, so editing application code does not invalidate this layer.
+COPY pyproject.toml uv.lock* ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---- runtime --------------------------------------------------------------
+FROM python:{{ python_version }}-slim-bookworm AS runtime
+
+{%- if feature_saml %}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libxmlsec1 libxmlsec1-openssl libxml2 \
+    && rm -rf /var/lib/apt/lists/*
+{%- endif %}
+
+# Run as an unprivileged user. A container process running as root turns any
+# code-execution bug into host-adjacent access.
+RUN groupadd --system --gid 1001 app \
+    && useradd --system --uid 1001 --gid app --create-home app
+
+WORKDIR /app
+
+COPY --from=builder --chown=app:app /app/.venv /app/.venv
+COPY --from=builder --chown=app:app /app/{{ package_dir }} /app/{{ package_dir }}
+COPY --from=builder --chown=app:app /app/alembic /app/alembic
+COPY --from=builder --chown=app:app /app/alembic.ini /app/alembic.ini
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+USER app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/live', timeout=3).status==200 else 1)"
+
+# --proxy-headers so the app sees the client scheme behind a load balancer;
+# TRUSTED_PROXY_COUNT still governs which forwarded address is believed.
+#
+# --no-server-header because uvicorn appends `Server: uvicorn` at the protocol
+# layer, after the ASGI app has run — the security-headers middleware cannot
+# strip it, so it has to be switched off here.
+CMD ["uvicorn", "{{ package_module }}.main:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]

@@ -1,0 +1,323 @@
+# basivo-auth Copier template.
+#
+# This file sits at the repository root so that the repo's git URL is directly
+# usable as a Copier template source:
+#
+#     copier copy git+https://github.com/mohamedabubasith/basivo-auth.git my-auth
+#
+# which is what makes `basivo-auth update` work: Copier needs git tags on the
+# template to diff one version against the next.
+#
+# Normally you drive this through the CLI, which validates answers with a
+# Pydantic model before handing them over:
+#
+#     basivo-auth new my-auth
+
+_min_copier_version: "9.4.0"
+_subdirectory: template/project
+_answers_file: .copier-answers.yml
+_templates_suffix: .jinja
+
+_exclude:
+  - "copier.yml"
+  - "~*"
+  - "*.py[co]"
+  - "__pycache__"
+  - ".git"
+  - ".DS_Store"
+  - ".venv"
+  - ".mypy_cache"
+  - ".pytest_cache"
+  - ".ruff_cache"
+
+# Never overwrite a developer's local environment file on update.
+_skip_if_exists:
+  - ".env"
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+
+project_slug:
+  type: str
+  help: "Project slug (directory + package name), e.g. acme-auth"
+  validator: >-
+    {% if not (project_slug | regex_search('^[a-z][a-z0-9]*([-_][a-z0-9]+)*$')) %}
+    Use lowercase letters, digits, '-' or '_', starting with a letter.
+    {% endif %}
+
+project_name:
+  type: str
+  help: "Human-readable project name"
+  default: "{{ project_slug | replace('-', ' ') | replace('_', ' ') | title }}"
+
+project_description:
+  type: str
+  help: "One-line description"
+  default: "Authentication service."
+
+# Derived. `when: false` means Copier never prompts and always recomputes from
+# the expression, so these can never drift out of sync with project_slug.
+package_name:
+  type: str
+  default: "{{ project_slug | replace('-', '_') }}"
+  when: false
+
+# Where the generated Python package lands, and what it is called on the import
+# path. Identical in service mode; in embedded mode they point at a package
+# inside the host project instead of a standalone `app/`.
+package_dir:
+  type: str
+  help: "Directory for the generated Python package (a path, e.g. app or myapp/auth)"
+  default: "app"
+  validator: >-
+    {% if not (package_dir | regex_search('^[a-z_][a-z0-9_]*(/[a-z_][a-z0-9_]*)*$')) %}
+    Use lowercase path segments that are valid Python identifiers,
+    e.g. "app" or "myapp/auth".
+    {% endif %}
+
+package_module:
+  type: str
+  default: "{{ package_dir | replace('/', '.') }}"
+  when: false
+
+tests_dir:
+  type: str
+  help: "Directory for the generated tests"
+  default: "tests"
+
+# ---------------------------------------------------------------------------
+# Install mode
+# ---------------------------------------------------------------------------
+
+install_mode:
+  type: str
+  help: "Standalone service, or auth installed into an existing FastAPI project"
+  default: service
+  choices:
+    "service - a deployable auth service of its own": service
+    "embedded - a package inside an existing FastAPI project": embedded
+
+is_service:
+  type: bool
+  default: "{{ install_mode == 'service' }}"
+  when: false
+
+is_embedded:
+  type: bool
+  default: "{{ install_mode == 'embedded' }}"
+  when: false
+
+# Embedded mode only: where the host project's SQLAlchemy declarative base and
+# async session dependency live. Auth tables are registered on the host's
+# metadata so both share one database, one migration history, one pool.
+host_db_module:
+  type: str
+  help: "Module holding your SQLAlchemy Base and session dependency"
+  default: "app.db"
+  when: "{{ install_mode == 'embedded' }}"
+
+host_base_name:
+  type: str
+  help: "Name of your declarative Base class"
+  default: "Base"
+  when: "{{ install_mode == 'embedded' }}"
+
+host_session_dependency:
+  type: str
+  help: "Name of your FastAPI session dependency (yields an AsyncSession)"
+  default: "get_async_session"
+  when: "{{ install_mode == 'embedded' }}"
+
+# ---------------------------------------------------------------------------
+# Shape
+# ---------------------------------------------------------------------------
+
+preset:
+  type: str
+  help: "Feature preset"
+  default: standard
+  choices:
+    "minimal - core auth only": minimal
+    "standard - core + OTP + TOTP 2FA + SSO": standard
+    "enterprise - standard + magic link + SAML + orgs": enterprise
+
+database:
+  type: str
+  help: "Database backend"
+  default: postgres
+  choices:
+    PostgreSQL: postgres
+    SQLite: sqlite
+
+database_driver:
+  type: str
+  default: "{% if database == 'postgres' %}postgresql+asyncpg{% else %}sqlite+aiosqlite{% endif %}"
+  when: false
+
+token_transport:
+  type: str
+  help: "How the access token reaches the client"
+  default: cookie
+  choices:
+    "cookie - HttpOnly cookie (browser apps; immune to XSS token theft)": cookie
+    "bearer - Authorization header (native/mobile, service-to-service)": bearer
+    "both - mount both backends": both
+
+transport_cookie:
+  type: bool
+  default: "{{ token_transport in ['cookie', 'both'] }}"
+  when: false
+
+transport_bearer:
+  type: bool
+  default: "{{ token_transport in ['bearer', 'both'] }}"
+  when: false
+
+email_provider:
+  type: str
+  help: "Transactional email delivery"
+  default: smtp
+  choices:
+    SMTP: smtp
+    Resend: resend
+    "Amazon SES": ses
+    "Console (development only)": console
+
+python_version:
+  type: str
+  help: "Target Python version"
+  default: "3.12"
+  choices: ["3.11", "3.12", "3.13"]
+
+# ---------------------------------------------------------------------------
+# Features
+#
+# Emitted as individual booleans rather than a list: Copier's conditional file
+# names need scalar expressions, and `{% if feature_otp %}` reads better in
+# templates than a membership test.
+# ---------------------------------------------------------------------------
+
+feature_otp:
+  type: bool
+  help: "Email/SMS one-time codes (passwordless login + step-up auth)"
+  default: "{{ preset in ['standard', 'enterprise'] }}"
+
+feature_totp:
+  type: bool
+  help: "TOTP 2FA via authenticator apps, with QR provisioning + recovery codes"
+  default: "{{ preset in ['standard', 'enterprise'] }}"
+
+feature_magic_link:
+  type: bool
+  help: "Single-use signed login links by email"
+  default: "{{ preset == 'enterprise' }}"
+
+feature_sso:
+  type: bool
+  help: "Social + OpenID Connect SSO (Google, GitHub, Microsoft, generic OIDC)"
+  default: "{{ preset in ['standard', 'enterprise'] }}"
+
+feature_passkeys:
+  type: bool
+  help: "Passkeys / WebAuthn"
+  default: false
+
+feature_saml:
+  type: bool
+  help: "SAML 2.0 SSO (requires the system xmlsec1 library)"
+  default: "{{ preset == 'enterprise' }}"
+
+feature_orgs:
+  type: bool
+  help: >-
+    Multi-tenant authorization: organisations, per-organisation roles and
+    permission-checked routes. Without this a project has authentication but no
+    access control beyond the is_superuser flag.
+  default: "{{ preset == 'enterprise' }}"
+
+# ---------------------------------------------------------------------------
+# Deployment
+# ---------------------------------------------------------------------------
+
+deploy_target:
+  type: str
+  help: "Generate AWS infrastructure (Terraform) for which runtime?"
+  default: none
+  choices:
+    "none - local Docker Compose only": none
+    "ecs - ECS on Fargate behind an ALB": ecs
+    "lambda - Lambda behind API Gateway": lambda
+    "both - Terraform for ECS and Lambda": both
+
+has_ecs:
+  type: bool
+  default: "{{ deploy_target in ['ecs', 'both'] }}"
+  when: false
+
+has_lambda:
+  type: bool
+  default: "{{ deploy_target in ['lambda', 'both'] }}"
+  when: false
+
+has_terraform:
+  type: bool
+  default: "{{ deploy_target != 'none' }}"
+  when: false
+
+state_backend:
+  type: str
+  help: >-
+    Where lockout counters, OTP codes and single-use markers live. Redis is
+    faster and shares state across workers; database drops the Redis dependency
+    entirely, at the cost of moving rate limiting to the edge.
+  default: redis
+  choices:
+    "redis - Redis/ElastiCache (recommended)": redis
+    "database - your SQL database, no Redis": database
+
+uses_redis:
+  type: bool
+  default: "{{ state_backend == 'redis' }}"
+  when: false
+
+# ---------------------------------------------------------------------------
+# Token lifetimes
+# ---------------------------------------------------------------------------
+
+access_token_ttl_seconds:
+  type: int
+  help: "Access token lifetime in seconds (short: a leaked token expires fast)"
+  default: 900
+  validator: >-
+    {% if access_token_ttl_seconds < 60 or access_token_ttl_seconds > 3600 %}
+    Keep this between 60 and 3600 seconds.
+    {% endif %}
+
+refresh_token_ttl_seconds:
+  type: int
+  help: "Refresh token lifetime in seconds (rotated on every use)"
+  default: 2592000
+  validator: >-
+    {% if refresh_token_ttl_seconds < 3600 %}
+    Must be at least 3600 seconds.
+    {% endif %}
+
+# ---------------------------------------------------------------------------
+# Scaffolding extras
+# ---------------------------------------------------------------------------
+
+include_docker:
+  type: bool
+  help: "Include docker-compose (Postgres + Redis + Mailpit) and a Dockerfile"
+  default: true
+
+include_ci:
+  type: bool
+  help: "Include GitHub Actions CI with bandit / pip-audit / gitleaks / semgrep"
+  default: true
+
+include_admin_cli:
+  type: bool
+  help: "Include an admin CLI (create superuser, verify user, revoke sessions)"
+  default: true

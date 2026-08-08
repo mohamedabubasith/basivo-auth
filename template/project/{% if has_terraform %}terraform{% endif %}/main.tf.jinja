@@ -1,0 +1,230 @@
+#############################################################################
+# {{ project_name }} — AWS infrastructure
+#
+# Starting point, not a finished production estate. Read it before applying:
+# it creates billable resources, and the defaults favour a small first
+# deployment over a hardened multi-account setup.
+#
+#   terraform init
+#   terraform plan  -var-file=env/dev.tfvars
+#   terraform apply -var-file=env/dev.tfvars
+#
+# Deliberately NOT included, because they depend on how your org works:
+#   - remote state backend (see backend.tf.example)
+#   - DNS and ACM certificates
+#   - multi-account / multi-region layout
+#   - WAF managed rule groups beyond the rate limit
+#############################################################################
+
+terraform {
+  required_version = ">= 1.6"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
+  }
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      Project     = "{{ project_slug }}"
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
+}
+
+locals {
+  name = "{{ project_slug }}-${var.environment}"
+
+  # Auth is a dependency of everything else you run, so it is deployed across
+  # at least two availability zones by default. A single-AZ database is cheaper
+  # and entirely reasonable for dev — set `multi_az = false`.
+  azs = slice(data.aws_availability_zones.available.names, 0, 2)
+}
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+#############################################################################
+# Network
+#
+# Private subnets hold the database{% if uses_redis %} and cache{% endif %}; public subnets hold only the
+# load balancer{% if has_lambda %} and NAT{% endif %}. Nothing with data in it is reachable from the
+# internet, which is the single most valuable boundary here.
+#############################################################################
+
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_support   = true
+  enable_dns_hostnames = true
+
+  tags = { Name = local.name }
+}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags   = { Name = local.name }
+}
+
+resource "aws_subnet" "public" {
+  count = length(local.azs)
+
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, count.index)
+  availability_zone       = local.azs[count.index]
+  map_public_ip_on_launch = true
+
+  tags = { Name = "${local.name}-public-${count.index}" }
+}
+
+resource "aws_subnet" "private" {
+  count = length(local.azs)
+
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + 10)
+  availability_zone = local.azs[count.index]
+
+  tags = { Name = "${local.name}-private-${count.index}" }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.main.id
+  }
+
+  tags = { Name = "${local.name}-public" }
+}
+
+resource "aws_route_table_association" "public" {
+  count = length(aws_subnet.public)
+
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+# NAT lets private compute reach Secrets Manager, SES and the outside world.
+# It is the single largest fixed cost in this file (~$32/month per gateway plus
+# data charges), so dev deploys one and shares it across AZs.
+resource "aws_eip" "nat" {
+  count  = var.single_nat_gateway ? 1 : length(local.azs)
+  domain = "vpc"
+  tags   = { Name = "${local.name}-nat-${count.index}" }
+}
+
+resource "aws_nat_gateway" "main" {
+  count = var.single_nat_gateway ? 1 : length(local.azs)
+
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+
+  depends_on = [aws_internet_gateway.main]
+  tags       = { Name = "${local.name}-${count.index}" }
+}
+
+resource "aws_route_table" "private" {
+  count  = length(local.azs)
+  vpc_id = aws_vpc.main.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.main[var.single_nat_gateway ? 0 : count.index].id
+  }
+
+  tags = { Name = "${local.name}-private-${count.index}" }
+}
+
+resource "aws_route_table_association" "private" {
+  count = length(aws_subnet.private)
+
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[count.index].id
+}
+
+#############################################################################
+# Secrets
+#
+# One secret holding every value the service needs. Generated here rather than
+# committed anywhere: Terraform creates the random values, writes them to
+# Secrets Manager, and the runtime reads them at startup. They never touch your
+# machine or your repository.
+#
+# NOTE: the generated values DO land in Terraform state. Use an encrypted
+# remote backend — see backend.tf.example.
+#############################################################################
+
+resource "random_password" "secret_key" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "jwt_secret" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "refresh_secret" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "csrf_secret" {
+  length  = 64
+  special = false
+}
+
+resource "random_password" "db_password" {
+  length  = 32
+  special = false
+}
+
+resource "aws_secretsmanager_secret" "app" {
+  name                    = "${local.name}-config"
+  description             = "Runtime configuration for {{ project_name }}"
+  recovery_window_in_days = var.environment == "prod" ? 30 : 0
+}
+
+resource "aws_secretsmanager_secret_version" "app" {
+  secret_id = aws_secretsmanager_secret.app.id
+
+  secret_string = jsonencode(merge(
+    {
+      ENVIRONMENT          = var.environment
+      SECRET_KEY           = random_password.secret_key.result
+      JWT_SECRET           = random_password.jwt_secret.result
+      REFRESH_TOKEN_SECRET = random_password.refresh_secret.result
+      CSRF_SECRET          = random_password.csrf_secret.result
+{%- if has_lambda %}
+      # RDS Proxy when enabled, the instance directly otherwise. The proxy is
+      # what keeps Lambda concurrency from exhausting Postgres connections.
+      DATABASE_URL = "postgresql+asyncpg://${var.db_username}:${random_password.db_password.result}@${var.use_rds_proxy ? aws_db_proxy.main[0].endpoint : aws_db_instance.main.address}:5432/${var.db_name}"
+{%- else %}
+      DATABASE_URL = "postgresql+asyncpg://${var.db_username}:${random_password.db_password.result}@${aws_db_instance.main.address}:5432/${var.db_name}"
+{%- endif %}
+{%- if uses_redis %}
+      REDIS_URL            = "redis://${aws_elasticache_replication_group.main.primary_endpoint_address}:6379/0"
+{%- endif %}
+      PUBLIC_BASE_URL      = var.public_base_url
+      FRONTEND_BASE_URL    = var.frontend_base_url
+      CORS_ORIGINS         = join(",", var.cors_origins)
+      # Behind an ALB or API Gateway there is exactly one proxy we control.
+      # Getting this wrong lets clients forge their own IP and defeat every
+      # IP-keyed control in the service.
+      TRUSTED_PROXY_COUNT = "1"
+    },
+    var.extra_settings,
+  ))
+}

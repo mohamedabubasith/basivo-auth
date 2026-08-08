@@ -1,0 +1,398 @@
+#############################################################################
+# ECS on Fargate
+#############################################################################
+
+resource "aws_ecr_repository" "main" {
+  name                 = local.name
+  image_tag_mutability = "MUTABLE"
+
+  # Every push is scanned. Auth is the highest-value target in your estate;
+  # a known-CVE base image is not something to find out about later.
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  encryption_configuration {
+    encryption_type = "AES256"
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "main" {
+  repository = aws_ecr_repository.main.name
+
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep the last 20 images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 20
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
+
+resource "aws_ecs_cluster" "main" {
+  name = local.name
+
+  setting {
+    name  = "containerInsights"
+    value = var.environment == "prod" ? "enabled" : "disabled"
+  }
+}
+
+#############################################################################
+# IAM
+#
+# Two roles, deliberately. The *execution* role belongs to the ECS agent and
+# only pulls the image and the secret. The *task* role belongs to your code.
+# Merging them would hand the application permission to read every secret it
+# can name, which is exactly what you do not want if it is ever compromised.
+#############################################################################
+
+resource "aws_iam_role" "ecs_execution" {
+  name = "${local.name}-ecs-execution"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
+  role       = aws_iam_role.ecs_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name = "read-config-secret"
+  role = aws_iam_role.ecs_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["secretsmanager:GetSecretValue"]
+      # Scoped to this service's own secret. Not `*`.
+      Resource = [aws_secretsmanager_secret.app.arn]
+    }]
+  })
+}
+
+resource "aws_iam_role" "ecs_task" {
+  name = "${local.name}-ecs-task"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+# Intentionally has no policies attached. Add permissions here only when the
+# application genuinely needs them (SES for email, for instance) — starting
+# from nothing is the point.
+
+resource "aws_cloudwatch_log_group" "ecs" {
+  name              = "/ecs/${local.name}"
+  retention_in_days = var.environment == "prod" ? 90 : 14
+}
+
+#############################################################################
+# Networking for the service
+#############################################################################
+
+resource "aws_security_group" "alb" {
+  name        = "${local.name}-alb"
+  description = "Public entry point."
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP, redirected to HTTPS"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "ecs" {
+  name        = "${local.name}-ecs"
+  description = "Tasks. Reachable only from the load balancer."
+  vpc_id      = aws_vpc.main.id
+
+  ingress {
+    description     = "From the ALB only"
+    from_port       = 8000
+    to_port         = 8000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# Grant database access by referencing the compute group, so the rule lives
+# next to the thing it authorises.
+resource "aws_security_group_rule" "ecs_to_database" {
+  type                     = "ingress"
+  from_port                = 5432
+  to_port                  = 5432
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.database.id
+  source_security_group_id = aws_security_group.ecs.id
+  description              = "Postgres from ECS tasks"
+}
+
+{% if uses_redis -%}
+resource "aws_security_group_rule" "ecs_to_cache" {
+  type                     = "ingress"
+  from_port                = 6379
+  to_port                  = 6379
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.cache.id
+  source_security_group_id = aws_security_group.ecs.id
+  description              = "Redis from ECS tasks"
+}
+
+{% endif -%}
+#############################################################################
+# Load balancer
+#############################################################################
+
+resource "aws_lb" "main" {
+  name               = local.name
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = aws_subnet.public[*].id
+
+  enable_deletion_protection = var.environment == "prod"
+  # Argon2 makes login slower than a typical request; the default 60s idle
+  # timeout is fine, but drop_invalid_header_fields matters more — it strips
+  # malformed headers before they reach the app's proxy-header parsing.
+  drop_invalid_header_fields = true
+}
+
+resource "aws_lb_target_group" "main" {
+  name        = local.name
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.main.id
+  target_type = "ip"
+
+  health_check {
+    # /live, not /health: liveness must not fail because a dependency is down,
+    # or a brief database blip would have the ALB kill every healthy task.
+    path                = "/live"
+    interval            = 30
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    matcher             = "200"
+  }
+
+  # Long enough for an in-flight login to finish before the task goes away.
+  deregistration_delay = 30
+}
+
+resource "aws_lb_listener" "https" {
+  count = var.certificate_arn != "" ? 1 : 0
+
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.certificate_arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.main.arn
+  }
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  # With a certificate, plain HTTP only ever redirects. Without one you get a
+  # working dev deployment — but the service refuses to start in prod over
+  # HTTP anyway, so this cannot silently become your production setup.
+  dynamic "default_action" {
+    for_each = var.certificate_arn != "" ? [1] : []
+    content {
+      type = "redirect"
+      redirect {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = var.certificate_arn == "" ? [1] : []
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.main.arn
+    }
+  }
+}
+
+#############################################################################
+# Service
+#############################################################################
+
+locals {
+  image = var.container_image != "" ? var.container_image : "${aws_ecr_repository.main.repository_url}:latest"
+}
+
+resource "aws_ecs_task_definition" "main" {
+  family                   = local.name
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.ecs_cpu
+  memory                   = var.ecs_memory
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "app"
+    image     = local.image
+    essential = true
+
+    portMappings = [{
+      containerPort = 8000
+      protocol      = "tcp"
+    }]
+
+    # ECS injects these from Secrets Manager as environment variables at start.
+    # They never appear in the task definition, the image, or your repository.
+    secrets = [
+      for key in [
+        "ENVIRONMENT", "SECRET_KEY", "JWT_SECRET", "REFRESH_TOKEN_SECRET",
+        "CSRF_SECRET", "DATABASE_URL",
+{%- if uses_redis %}
+        "REDIS_URL",
+{%- endif %}
+        "PUBLIC_BASE_URL", "FRONTEND_BASE_URL", "CORS_ORIGINS",
+        "TRUSTED_PROXY_COUNT",
+        ] : {
+        name      = key
+        valueFrom = "${aws_secretsmanager_secret.app.arn}:${key}::"
+      }
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.ecs.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "app"
+      }
+    }
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/live', timeout=3).status==200 else 1)\""]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 30
+    }
+  }])
+}
+
+resource "aws_ecs_service" "main" {
+  name            = local.name
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.main.arn
+  desired_count   = var.ecs_desired_count
+  launch_type     = "FARGATE"
+
+  network_configuration {
+    subnets          = aws_subnet.private[*].id
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = false
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.main.arn
+    container_name   = "app"
+    container_port   = 8000
+  }
+
+  # Never drop below the running count during a deploy: this is the service
+  # every other product authenticates against.
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  health_check_grace_period_seconds = 60
+
+  depends_on = [aws_lb_listener.http]
+
+  lifecycle {
+    # Let CI update the image without Terraform reverting it on the next apply.
+    ignore_changes = [task_definition, desired_count]
+  }
+}
+
+resource "aws_appautoscaling_target" "ecs" {
+  service_namespace  = "ecs"
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.main.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  min_capacity       = var.ecs_min_capacity
+  max_capacity       = var.ecs_max_capacity
+}
+
+resource "aws_appautoscaling_policy" "cpu" {
+  name               = "${local.name}-cpu"
+  policy_type        = "TargetTrackingScaling"
+  service_namespace  = aws_appautoscaling_target.ecs.service_namespace
+  resource_id        = aws_appautoscaling_target.ecs.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs.scalable_dimension
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    # Scale on CPU, not requests: Argon2 makes login CPU-bound, so CPU is the
+    # signal that actually correlates with latency here.
+    target_value       = 60
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}

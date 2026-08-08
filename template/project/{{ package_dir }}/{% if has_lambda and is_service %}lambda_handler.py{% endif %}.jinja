@@ -1,0 +1,83 @@
+"""AWS Lambda entrypoint.
+
+Lambda is not just "the container, but smaller". Three things about this runtime
+change how the service must behave, and each is handled below rather than
+discovered in production.
+
+**1. Connection pooling inverts.** A container holds one pool for its lifetime.
+Lambda gives every concurrent invocation its own execution environment, each
+with its own pool. At 100 concurrent requests a `pool_size=10` config asks for
+up to 1,000+ connections; a small RDS instance caps near 100 and starts refusing
+them. So Lambda uses `NullPool` — one connection per invocation, released at the
+end — and points at **RDS Proxy**, which does the real pooling outside the
+function. See `db.py`.
+
+**2. Secrets cannot come from a file.** There is no `.env` on a Lambda. Values
+are fetched from Secrets Manager once per cold start, cached in module scope,
+and reused by every warm invocation. Fetching per request would add latency and
+cost on every call.
+
+**3. Work stops when the response is sent.** Lambda freezes the environment the
+moment the handler returns, so anything not awaited before then may simply never
+run. Every email send and audit write in this codebase is awaited inline for
+exactly this reason — do not "optimise" one into a background task.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any
+
+import structlog
+from mangum import Mangum
+
+logger = structlog.get_logger(__name__)
+
+
+def _load_secrets() -> None:
+    """Pull configuration out of Secrets Manager into the environment.
+
+    Runs at import time — once per cold start, never on a warm invocation.
+    Values already present in the environment win, so a Terraform-set variable
+    can override the secret without editing it.
+
+    ``SECRETS_ARN`` is set by the generated Terraform. Without it this is a
+    no-op, which is what lets the same image run locally.
+    """
+    arn = os.environ.get("SECRETS_ARN")
+    if not arn:
+        return
+
+    try:
+        import boto3
+
+        client = boto3.client("secretsmanager")
+        payload = client.get_secret_value(SecretId=arn)["SecretString"]
+        for key, value in json.loads(payload).items():
+            os.environ.setdefault(key, str(value))
+    except Exception as exc:  # noqa: BLE001
+        # Fail loudly in the log but let Settings raise the real error: its
+        # validation message names the exact missing key, which is far more
+        # useful than a boto stack trace.
+        logger.error("secrets_manager_load_failed", arn=arn, error=str(exc))
+
+
+_load_secrets()
+
+# Imported *after* the secrets are in place: Settings validates at import time
+# and would reject a half-configured environment.
+from {{ package_module }}.main import app  # noqa: E402
+
+#: API Gateway / ALB events translated to ASGI.
+#:
+#: `lifespan="off"` because Lambda has no startup/shutdown phase to speak of —
+#: the environment is frozen and thawed, not started and stopped. Anything the
+#: app does in its lifespan hook must therefore be safe to skip here; ours only
+#: configures logging and disposes the engine.
+handler = Mangum(app, lifespan="off")
+
+
+def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    """The function AWS invokes. Named explicitly for the Terraform config."""
+    return handler(event, context)

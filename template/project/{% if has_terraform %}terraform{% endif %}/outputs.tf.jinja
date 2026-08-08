@@ -1,0 +1,61 @@
+output "database_endpoint" {
+  description = "Postgres endpoint. Reachable only from inside the VPC."
+  value       = aws_db_instance.main.address
+}
+
+output "secret_arn" {
+  description = "Secrets Manager ARN holding the runtime configuration."
+  value       = aws_secretsmanager_secret.app.arn
+}
+{% if has_ecs %}
+output "ecr_repository_url" {
+  description = "Push your container image here."
+  value       = aws_ecr_repository.main.repository_url
+}
+
+output "alb_dns_name" {
+  description = "Point your DNS record at this."
+  value       = aws_lb.main.dns_name
+}
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.main.name
+}
+{% endif %}
+{%- if has_lambda %}
+output "lambda_ecr_repository_url" {
+  description = "Push the Lambda container image here."
+  value       = aws_ecr_repository.lambda.repository_url
+}
+
+output "api_endpoint" {
+  description = "API Gateway URL. Set PUBLIC_BASE_URL to this (or your custom domain)."
+  value       = aws_apigatewayv2_stage.main.invoke_url
+}
+
+output "lambda_function_name" {
+  value = aws_lambda_function.main.function_name
+}
+{% endif %}
+output "post_apply_checklist" {
+  description = "What still needs doing by hand."
+  value       = <<-EOT
+    1. Build and push the image:
+{%- if has_ecs %}
+         docker build -t ${aws_ecr_repository.main.repository_url}:latest .
+         aws ecr get-login-password | docker login --username AWS --password-stdin ${aws_ecr_repository.main.repository_url}
+         docker push ${aws_ecr_repository.main.repository_url}:latest
+{%- endif %}
+    2. Run the migrations once, from inside the VPC (a one-off ECS task or a
+       bastion). The database is not publicly reachable, by design.
+    3. Add SMTP or OAuth credentials via the `extra_settings` variable.
+{%- if has_ecs %}
+    4. Set `certificate_arn` and point DNS at the ALB. Until then the service
+       is HTTP-only, and it refuses to start with ENVIRONMENT=prod.
+{%- endif %}
+{%- if not uses_redis %}
+    5. This build has no Redis: API Gateway throttling and the WAF rate rule
+       are your real rate limiting. Review those numbers before going live.
+{%- endif %}
+  EOT
+}

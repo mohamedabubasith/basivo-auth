@@ -1,0 +1,261 @@
+[project]
+name = "{{ project_slug }}"
+version = "0.1.0"
+description = "{{ project_description }}"
+requires-python = ">={{ python_version }}"
+readme = "README.md"
+
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    # Core auth engine. Pinned to the 15.x line: see docs/security.md for why
+    # this dependency is isolated behind app/auth/engine/.
+    "fastapi-users[sqlalchemy]>=15.0.5,<16",
+    # Argon2id hashing. Replaces passlib, which is unmaintained and does not
+    # import on Python 3.13+.
+    "pwdlib[argon2]>=0.2.1",
+    "pyjwt>=2.10.0",
+    # HKDF key derivation + Fernet for secrets that must be recoverable at rest.
+    "cryptography>=44.0.0",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "alembic>=1.14.0",
+{%- if database == 'postgres' %}
+    "asyncpg>=0.30.0",
+{%- else %}
+    "aiosqlite>=0.20.0",
+{%- endif %}
+{%- if uses_redis %}
+    "redis>=5.2.0",
+{%- endif %}
+    "pydantic[email]>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "httpx>=0.28.0",
+    "slowapi>=0.1.9",
+    "structlog>=24.4.0",
+    "jinja2>=3.1.4",
+    "python-multipart>=0.0.18",
+{%- if has_lambda %}
+    # ASGI adapter for API Gateway/ALB events, plus the SDK used to read
+    # secrets at cold start.
+    "mangum>=0.19.0",
+    "boto3>=1.35.0",
+{%- endif %}
+{%- if feature_otp or feature_totp %}
+    "pyotp>=2.9.0",
+{%- endif %}
+{%- if feature_totp %}
+    "qrcode[pil]>=8.0",
+{%- endif %}
+{%- if feature_sso %}
+    "httpx-oauth>=0.16.0",
+    "authlib>=1.3.2",
+{%- endif %}
+{%- if feature_passkeys %}
+    "webauthn>=2.3.0",
+{%- endif %}
+{%- if feature_saml %}
+    # Requires the system xmlsec1 library and its headers at build time.
+    # macOS: brew install libxmlsec1 pkg-config
+    # Debian/Ubuntu: apt install libxmlsec1-dev pkg-config
+    "python3-saml>=1.16.0",
+{%- endif %}
+{%- if email_provider == 'smtp' %}
+    "aiosmtplib>=3.0.2",
+{%- elif email_provider == 'ses' %}
+    "aioboto3>=13.2.0",
+{%- endif %}
+{%- if include_admin_cli %}
+    "typer>=0.15.0",
+    "rich>=13.9.0",
+{%- endif %}
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "anyio>=4.6.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "bandit[toml]>=1.8.0",
+    "pip-audit>=2.7.3",
+{%- if uses_redis %}
+    "types-redis>=4.6.0",
+{%- endif %}
+{%- if has_lambda %}
+    "boto3-stubs[secretsmanager]>=1.35.0",
+{%- endif %}
+{%- if feature_totp %}
+    "types-qrcode>=8.0",
+{%- endif %}
+    "freezegun>=1.5.1",
+    # The default suite runs on SQLite{% if uses_redis %} + fakeredis{% endif %} so `pytest` needs
+    # no containers. aiosqlite is a dev dependency even for Postgres projects
+    # for exactly that reason.
+    "aiosqlite>=0.20.0",
+{%- if uses_redis %}
+    "fakeredis>=2.26.1",
+{%- endif %}
+    "asgi-lifespan>=2.1.0",
+{%- if database == 'postgres' %}
+    # For the `slow`-marked tests that assert real Postgres behaviour
+    # (row locking under concurrent refresh).
+    "testcontainers[postgres{% if uses_redis %},redis{% endif %}]>=4.8.2",
+{%- endif %}
+]
+
+{% if include_admin_cli -%}
+[project.scripts]
+{{ project_slug }} = "{{ package_module }}.admin:cli"
+{%- endif %}
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["{{ package_dir }}"]
+
+# ---------------------------------------------------------------------------
+# Lint
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+target-version = "py{{ python_version | replace('.', '') }}"
+src = ["{{ package_dir }}", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # isort
+    "N",        # pep8-naming
+    "UP",       # pyupgrade
+    "B",        # flake8-bugbear
+    "C4",       # comprehensions
+    "SIM",      # simplify
+    "S",        # bandit: security anti-patterns
+    "TID",      # tidy-imports: enforces the engine seam below
+    "ASYNC",    # async correctness
+    "DTZ",      # naive datetimes are a bug class in token expiry
+    "BLE",      # blind excepts must be deliberate and annotated
+    "PLW",      # pylint warnings (global statements, loop-variable capture)
+    "RUF",
+]
+
+# FastAPI's dependency injection *requires* calls in argument defaults
+# (`user = Depends(...)`), which is exactly what B008 exists to flag. Same for
+# Typer's Option/Argument. Marking them immutable keeps B008 useful elsewhere
+# instead of being blanket-disabled.
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Form",
+    "fastapi.File",
+    "fastapi.security.OAuth2PasswordRequestForm",
+    "typer.Option",
+    "typer.Argument",
+{%- if feature_orgs %}
+    # A dependency factory: `Depends(require(Permission.X))` builds the
+    # dependency once at import time, which is the whole point of the pattern.
+    "{{ package_module }}.authz.require",
+{%- endif %}
+]
+
+# The seam. `fastapi_users` may only be imported inside app/auth/engine/.
+# Everything else imports from {{ package_module }}.engine, so replacing the auth engine
+# later is a change to one package rather than a rewrite.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"fastapi_users".msg = "Import from {{ package_module }}.engine instead. See docs/security.md#the-engine-seam."
+"fastapi_users_db_sqlalchemy".msg = "Import from {{ package_module }}.engine instead."
+"passlib".msg = "Unmaintained and broken on Python 3.13+. Use app.auth.security.passwords."
+"jose".msg = "python-jose is unmaintained. Use PyJWT via app.auth.security.tokens."
+
+[tool.ruff.lint.per-file-ignores]
+# The engine package is the one place allowed to touch fastapi_users directly.
+"{{ package_dir }}/engine/*" = ["TID251"]
+
+# S105/S106 flag any assignment whose *name* contains password/token/secret,
+# regardless of the value. These modules define enum members, audit action names
+# and settings keys with exactly those words; the values are identifiers and
+# rate-limit strings, not credentials. The rule stays active everywhere else,
+# where a real hardcoded secret would actually be caught.
+"{{ package_dir }}/security/audit.py" = ["S105"]
+"{{ package_dir }}/security/tokens.py" = ["S105"]
+"{{ package_dir }}/settings.py" = ["S105"]
+
+"tests/**" = ["S101", "S105", "S106", "TID251"]
+"alembic/**" = ["N999", "S101"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["{{ package_dir }}"]
+
+# ---------------------------------------------------------------------------
+# Types
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "{{ python_version }}"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+# The engine's `UserProtocol` declares plain attribute types (`email: str`).
+# `app.auth.models.User` types the same columns as SQLAlchemy `Mapped[...]`, which
+# is what makes every `User.email == x` query expression type-check. mypy cannot
+# see through the descriptor to match the protocol structurally, so it reports a
+# type-var mismatch on five engine call sites. Conformance holds at runtime —
+# the whole suite exercises it — and this is the package whose job is absorbing
+# exactly this kind of library-typing friction.
+[[tool.mypy.overrides]]
+module = [
+    "{{ package_module }}.engine.adapters",
+    "{{ package_module }}.engine.backends",
+    "{{ package_module }}.engine.dependencies",
+    "{{ package_module }}.engine.manager",
+]
+disable_error_code = ["type-var"]
+
+[[tool.mypy.overrides]]
+module = [
+    "fastapi_users.*",
+    "fastapi_users_db_sqlalchemy.*",
+    "slowapi.*",
+{%- if not uses_redis %}
+    "limits.*",
+{%- endif %}
+{%- if feature_sso %}
+    "httpx_oauth.*",
+    "authlib.*",
+{%- endif %}
+{%- if feature_saml %}
+    "onelogin.*",
+{%- endif %}
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers --cov={{ package_dir }} --cov-report=term-missing"
+markers = [
+    "security: assertions that encode a specific security control",
+    "slow: needs external containers",
+]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]

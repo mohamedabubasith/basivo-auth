@@ -1,0 +1,11 @@
+{% extends "_base.html.j2" %}
+{% block content %}
+  <p style="margin:0 0 12px;">Click below to sign in. No password needed.</p>
+  {% with label = "Sign in" %}{% include "_button.html.j2" %}{% endwith %}
+  <p style="margin:20px 0 0;font-size:13px;color:#6b7280;">
+    Expires in {{ expires_minutes }} minutes and works once.
+  </p>
+{% endblock %}
+{% block footer %}
+  Anyone with this link can sign in as you until it expires. Do not forward it.
+{% endblock %}

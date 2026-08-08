@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly dependency audit. A CVE published after your last PR would
+    # otherwise go unnoticed until someone happens to open one.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ '{{' }} github.workflow {{ '}}' }}-${{ '{{' }} github.ref {{ '}}' }}
+  cancel-in-progress: true
+
+env:
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --all-extras --dev
+      - name: ruff (lint)
+        run: uv run ruff check --output-format=github .
+      - name: ruff (format)
+        run: uv run ruff format --check .
+      - name: mypy
+        run: uv run mypy {{ package_dir }}
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["{{ python_version }}"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ '{{' }} matrix.python {{ '}}' }}
+      - run: uv sync --frozen --all-extras --dev
+      - name: pytest
+        run: uv run pytest -m "not slow" --cov={{ package_dir }} --cov-report=xml
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks diffs the full history; a shallow clone would miss a
+          # secret committed and removed in an earlier commit.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --all-extras --dev
+
+      - name: bandit (static analysis)
+        run: uv run bandit -c pyproject.toml -r {{ package_dir }} -ll
+
+      - name: pip-audit (known CVEs in dependencies)
+        run: uv run pip-audit --strict
+
+      - name: gitleaks (committed secrets)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ '{{' }} secrets.GITHUB_TOKEN {{ '}}' }}
+
+      - name: semgrep (auth-specific rulesets)
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/security-audit
+            p/secrets
+            p/jwt
+            p/sql-injection
+
+  engine-seam:
+    # The fastapi-users isolation rule is the thing that keeps a future engine
+    # migration bounded. Asserting it explicitly means a violation fails with a
+    # message that explains itself, rather than as a generic lint error.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no fastapi_users imports outside {{ package_dir }}/engine/
+        run: |
+          if grep -rn --include="*.py" \
+               -E "^\s*(from|import)\s+fastapi_users" {{ package_dir }} \
+               | grep -v "^{{ package_dir }}/engine/"; then
+            echo "::error::fastapi_users may only be imported inside {{ package_dir }}/engine/."
+            echo "Import from {{ package_module }}.engine instead. See docs/security.md."
+            exit 1
+          fi
+          echo "Engine seam intact."
