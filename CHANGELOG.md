@@ -13,6 +13,22 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.2.3] — 2026-08-09
+
+### Fixed
+
+**Another lint failure delivered by `update`.** 0.2.1 also left a stray blank
+line before the enrolment route. Same mechanism as the import in 0.2.2: post-
+generation formatting hid it from `new`, and `update` does not reformat, so
+projects pulling the security fix got a failing format check.
+
+### Changed
+
+- CI now runs `ruff format --check` on raw, unformatted template output, not
+  just `ruff check`. That is precisely what `update` writes into an existing
+  project, and it is the check that would have caught both this and the 0.2.2
+  import ordering before either shipped.
+
 ## [0.2.2] — 2026-08-09
 
 ### Fixed
@@ -188,7 +204,8 @@ First release.
 - Passkeys and SAML generate settings and dependencies but no routes yet.
   Passkeys is off in every preset; SAML is enabled by the `enterprise` preset.
 
-[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.3
 [0.2.2]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.2
 [0.2.1]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.1
 [0.2.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.0

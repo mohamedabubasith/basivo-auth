@@ -102,15 +102,25 @@ jobs:
           uv run mypy app
           uv run pytest -q --no-cov
 
-      # A generated project must lint clean even when the user skipped the
-      # dependency install, because that path skips a different code route.
-      - name: --no-install output is also clean
+      # Raw template output, with no post-generation formatting applied.
+      #
+      # This is what `basivo-auth update` writes into an existing project: it
+      # merges template changes but does not re-run the formatter. So anything
+      # only `ruff format` would have fixed reaches users as a failing lint job
+      # on *their* CI, delivered by a security update. Both a stray blank line
+      # and a misplaced import have shipped that way.
+      #
+      # The `--check` on format is the part that matters here; `new` alone
+      # would tidy both before anyone saw them.
+      - name: raw template output is lint and format clean
         run: |
           uv run basivo-auth new noinstall-auth \
             --local --defaults --no-git --no-install \
             --preset "${{ matrix.preset }}" \
             --state "${{ matrix.state }}"
-          cd noinstall-auth && uvx ruff check --output-format=github .
+          cd noinstall-auth
+          uvx ruff check --output-format=github .
+          uvx ruff format --check .
 
   terraform:
     name: terraform (${{ matrix.target }})

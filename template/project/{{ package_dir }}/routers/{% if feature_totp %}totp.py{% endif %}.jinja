@@ -43,7 +43,6 @@ def _step_up_used_key(jti: str) -> str:
 {%- endif %}
 
 
-
 @router.post("/enrol", response_model=TOTPEnrolStart)
 @limiter.limit("5/hour")
 async def start_enrolment(
