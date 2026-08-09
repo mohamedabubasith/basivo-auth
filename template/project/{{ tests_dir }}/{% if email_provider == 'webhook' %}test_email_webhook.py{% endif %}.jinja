@@ -121,6 +121,39 @@ async def test_the_signature_covers_the_exact_bytes_sent(webhook) -> None:
     assert request.headers["X-Basivo-Signature"].removeprefix("sha256=") != expected
 
 
+async def test_the_body_is_canonical_so_another_language_can_rebuild_it(webhook) -> None:
+    """Sorted keys, no spaces, real UTF-8.
+
+    Verifying against the raw body is the correct approach, but not every
+    receiver can reach it — n8n only exposes it behind an option. A canonical
+    encoding means such a receiver can reproduce these exact bytes from the
+    parsed JSON instead.
+
+    `ensure_ascii=False` is the part that matters. With Python's default, an
+    em-dash in an email template is written as \\u2014 while JavaScript emits
+    the character literally, so the two sides disagree and every signature
+    fails — but only on the messages that happen to contain one.
+    """
+    captured, _ = webhook
+    email = sender.Email(
+        to="person@example.com",
+        subject="Reset your password — action needed",
+        html="<p>Expires in 1 hour — act now</p>",
+        text="Expires in 1 hour — act now",
+    )
+    await sender.send(email)
+
+    raw = captured["request"].content
+    assert b"\\u2014" not in raw, "non-ASCII was escaped; JavaScript will not match"
+    assert "—".encode() in raw
+
+    text = raw.decode("utf-8")
+    assert ", " not in text.split('"html"')[0], "separators are not compact"
+
+    keys = list(json.loads(text))
+    assert keys == sorted(keys), "keys are not sorted"
+
+
 async def test_a_timestamp_is_sent_so_replay_can_be_bounded(webhook) -> None:
     captured, _ = webhook
     await sender.send(an_email())

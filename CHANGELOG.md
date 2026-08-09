@@ -13,6 +13,39 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-08-09
+
+### Added
+
+- **A ready-to-import n8n workflow**, `docs/n8n-workflow.json`, for projects
+  using the webhook provider: webhook → signature check → Gmail → response.
+  Connect a Google account, set `BASIVO_WEBHOOK_SECRET` in n8n's environment,
+  paste the production URL into `EMAIL_WEBHOOK_URL`, activate.
+
+  It ships with execution saving set to `none` on success, because n8n stores
+  execution data by default and that data would contain live password-reset
+  links.
+
+### Changed
+
+- **The signed payload is now canonical UTF-8** (`ensure_ascii=False` alongside
+  the existing sorted keys and compact separators).
+
+  Hashing the raw body is the correct approach, but n8n only exposes the raw
+  body behind an option — without it the JSON is parsed and the original bytes
+  are gone. A canonical encoding lets a receiver rebuild exactly what was
+  signed from the parsed object.
+
+  `ensure_ascii=False` is the load-bearing part. With Python's default an
+  em-dash is written `\u2014` while JavaScript emits the character literally,
+  so the two sides disagree — and only on messages that happen to contain one,
+  which is the kind of bug that reaches production. Verified by signing in
+  Python and re-deriving in Node against a payload full of non-ASCII: 358 bytes
+  both sides, signatures equal.
+
+  A generated test now asserts the encoding, so the property cannot be lost by
+  a later edit.
+
 ## [0.3.0] — 2026-08-09
 
 ### Added
@@ -241,7 +274,8 @@ First release.
 - Passkeys and SAML generate settings and dependencies but no routes yet.
   Passkeys is off in every preset; SAML is enabled by the `enterprise` preset.
 
-[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.3.1
 [0.3.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.3.0
 [0.2.3]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.3
 [0.2.2]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.2

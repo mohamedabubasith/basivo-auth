@@ -176,7 +176,19 @@ async def _send_webhook(email: Email) -> None:
     # Serialised once, and the signature covers these exact bytes. Re-encoding
     # before sending would let key order or spacing differ from what was
     # signed, and the receiver's check would fail intermittently.
-    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    #
+    # The form is deliberately canonical — sorted keys, no spaces, UTF-8 rather
+    # than \uXXXX escapes. Verifying against the raw body is still the correct
+    # approach, but not every receiver can reach it: n8n only exposes the raw
+    # body when a specific option is set. Canonical output means such a
+    # receiver can rebuild these exact bytes from the parsed JSON instead.
+    # `ensure_ascii=False` is the load-bearing part: with the default, an
+    # em-dash in an email template becomes \u2014 here and stays literal in
+    # JavaScript, and every signature check fails on exactly the messages that
+    # contain one.
+    body = json.dumps(
+        payload, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+    ).encode("utf-8")
 
     timestamp = str(int(time.time()))
     headers = {
