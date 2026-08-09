@@ -63,6 +63,8 @@ async def send(email: Email) -> bool:
         await _send_resend(email)
 {%- elif email_provider == 'ses' %}
         await _send_ses(email)
+{%- elif email_provider == 'webhook' %}
+        await _send_webhook(email)
 {%- else %}
         _send_console(email)
 {%- endif %}
@@ -140,6 +142,75 @@ async def _send_ses(email: Email) -> None:
                 }
             },
         )
+{%- elif email_provider == 'webhook' -%}
+async def _send_webhook(email: Email) -> None:
+    """POST the rendered email to a URL you control, which does the sending.
+
+    Built for an automation platform — n8n, Make, Zapier — so the mailbox can
+    be one this service holds no credentials for: connect Gmail to n8n over
+    OAuth, and all this service ever knows is a URL.
+
+    The request is signed. An automation webhook is a URL and URLs leak — into
+    browser history, a screenshot, an exported workflow — and an unauthenticated
+    one lets whoever finds it send mail from your domain with content of their
+    choosing. That is a phishing kit, addressed from you. Verifying the
+    signature on the other end is what makes the endpoint safe to expose.
+    """
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    import httpx
+
+    settings = get_settings()
+
+    payload = {
+        "to": email.to,
+        "subject": email.subject,
+        "html": email.html,
+        "text": email.text,
+        "from": {"name": settings.email_from_name, "email": settings.email_from},
+        "project": settings.project_name,
+    }
+    # Serialised once, and the signature covers these exact bytes. Re-encoding
+    # before sending would let key order or spacing differ from what was
+    # signed, and the receiver's check would fail intermittently.
+    body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+    timestamp = str(int(time.time()))
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "{{ project_slug }}/auth",
+        # Lets the receiver reject an old capture even if it never sees the
+        # same request twice.
+        "X-Basivo-Timestamp": timestamp,
+    }
+
+    secret = settings.email_webhook_secret.get_secret_value()
+    if secret:
+        signature = hmac.new(
+            secret.encode("utf-8"),
+            timestamp.encode("utf-8") + b"." + body,
+            hashlib.sha256,
+        ).hexdigest()
+        headers["X-Basivo-Signature"] = f"sha256={signature}"
+
+    auth = settings.email_webhook_auth_header.get_secret_value()
+    if auth:
+        headers["Authorization"] = auth
+
+    async with httpx.AsyncClient(timeout=settings.email_webhook_timeout_seconds) as client:
+        response = await client.post(
+            settings.email_webhook_url,
+            content=body,
+            headers=headers,
+            # Not followed. A redirect would forward the body — which contains a
+            # password-reset link — to a host that was never configured here.
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+
 {%- else -%}
 def _send_console(email: Email) -> None:
     """Development sink. Prints instead of sending."""

@@ -87,6 +87,14 @@ def build_env(answers: ProjectAnswers) -> dict[str, str]:
         env["RESEND_API_KEY"] = ""
     elif answers.email_provider is EmailProvider.SES:
         env |= {"AWS_REGION": "us-east-1", "AWS_ACCESS_KEY_ID": "", "AWS_SECRET_ACCESS_KEY": ""}
+    elif answers.email_provider is EmailProvider.WEBHOOK:
+        env |= {
+            "EMAIL_WEBHOOK_URL": "",
+            # Generated, not blank: the endpoint receives password-reset links,
+            # so it should be able to prove the request came from here.
+            "EMAIL_WEBHOOK_SECRET": _new_secret(),
+            "EMAIL_WEBHOOK_AUTH_HEADER": "",
+        }
 
     env["EMAIL_FROM"] = f"no-reply@{answers.project_slug}.local"
     env["EMAIL_FROM_NAME"] = answers.project_name
@@ -174,6 +182,7 @@ def write_env_files(project: Path, answers: ProjectAnswers, report: PostGenRepor
         "WEBAUTHN_RP_NAME",
         "WEBAUTHN_ORIGIN",
         "AWS_REGION",
+        "EMAIL_WEBHOOK_URL",
         "ACCESS_TOKEN_TTL_SECONDS",
         "REFRESH_TOKEN_TTL_SECONDS",
     }

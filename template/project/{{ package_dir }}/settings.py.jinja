@@ -194,6 +194,32 @@ class Settings(BaseSettings):
     resend_api_key: SecretStr = SecretStr("")
 {%- elif email_provider == 'ses' %}
     aws_region: str = "us-east-1"
+{%- elif email_provider == 'webhook' %}
+    email_webhook_url: str = ""
+    """Where to POST each rendered email. Your automation does the sending.
+
+    Must be https outside development — see the validator below. The payload
+    carries password-reset and verification links.
+    """
+
+    email_webhook_secret: SecretStr = SecretStr("")
+    """Signs every request: `X-Basivo-Signature: sha256=<hmac>` over the exact
+    body, with `X-Basivo-Timestamp` to bound replay.
+
+    An automation webhook is a URL, and a URL leaks — into a browser history, a
+    screenshot, a shared workflow export. Without a signature anyone holding it
+    can make your system send mail with content of their choosing, from your
+    domain. Verifying the signature is what makes the endpoint safe to expose.
+    """
+
+    email_webhook_auth_header: SecretStr = SecretStr("")
+    """Optional `Authorization` header value, sent verbatim.
+
+    n8n's built-in Header Auth credential is the quickest way to lock a webhook
+    down, so this exists alongside the signature rather than instead of it.
+    """
+
+    email_webhook_timeout_seconds: float = Field(default=10.0, ge=1, le=60)
 {%- endif %}
 
 {%- if feature_totp %}
@@ -322,6 +348,23 @@ class Settings(BaseSettings):
 
         if str(self.public_base_url).startswith("http://"):
             raise ValueError("PUBLIC_BASE_URL must be https in staging/production.")
+{%- if email_provider == 'webhook' %}
+        if not self.email_webhook_url:
+            raise ValueError("EMAIL_WEBHOOK_URL must be set; nothing would be delivered.")
+        if not self.email_webhook_url.startswith("https://"):
+            # The body contains password-reset and verification links. Over
+            # plain HTTP those are readable by anything on the path, which is a
+            # full account takeover for every message sent.
+            raise ValueError("EMAIL_WEBHOOK_URL must be https in staging/production.")
+        if not self.email_webhook_secret.get_secret_value() and not (
+            self.email_webhook_auth_header.get_secret_value()
+        ):
+            raise ValueError(
+                "Set EMAIL_WEBHOOK_SECRET (request signing) or "
+                "EMAIL_WEBHOOK_AUTH_HEADER. An unauthenticated webhook lets "
+                "anyone who learns the URL send mail as your domain."
+            )
+{%- endif %}
 
 {%- if feature_sso %}
         for url in self.sso_allowed_redirect_urls:

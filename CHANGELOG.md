@@ -13,6 +13,43 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-08-09
+
+### Added
+
+**A `webhook` email provider.** `--email webhook` makes the service POST each
+rendered message to a URL you own, and something on the other end — n8n, Make,
+Zapier, an internal service — does the sending.
+
+The point is whose credentials are involved. Connect Gmail to n8n once over
+OAuth and this service never holds a mail credential at all; it knows a URL.
+
+Named generically rather than `n8n` because nothing about it is n8n-specific,
+and a provider called `n8n` would look wrong the day someone points it at Make.
+
+The payload carries password-reset and verification links, which are
+credentials, so the endpoint is treated as security-critical rather than as a
+convenience:
+
+- **Every request is signed** — `X-Basivo-Signature: sha256=<hmac>` over
+  `timestamp + "." + body`, with `X-Basivo-Timestamp` to bound replay. An
+  automation webhook is a URL and URLs leak; an unauthenticated one lets
+  whoever finds it send mail from your domain with content of their choosing.
+- **The signature covers the exact bytes sent.** The body is serialised once
+  and reused, because re-encoding before sending would let key order differ
+  from what was signed and the receiver's check would fail intermittently.
+- **Redirects are not followed.** A 302 would forward a live reset link to a
+  host that was never configured.
+- **Staging and production refuse to start** on a plaintext `EMAIL_WEBHOOK_URL`
+  or with neither `EMAIL_WEBHOOK_SECRET` nor `EMAIL_WEBHOOK_AUTH_HEADER` set.
+
+Generated projects get `docs/email-webhook.md`, including the n8n Code node
+that verifies the signature — with a constant-time comparison, a staleness
+check, and a warning that "Raw Body" must be enabled or every signature fails.
+
+Eleven tests come with it, asserting the properties rather than that a request
+goes out.
+
 ## [0.2.3] — 2026-08-09
 
 ### Fixed
@@ -204,7 +241,8 @@ First release.
 - Passkeys and SAML generate settings and dependencies but no routes yet.
   Passkeys is off in every preset; SAML is enabled by the `enterprise` preset.
 
-[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/mohamedabubasith/basivo-auth/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.3.0
 [0.2.3]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.3
 [0.2.2]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.2
 [0.2.1]: https://github.com/mohamedabubasith/basivo-auth/releases/tag/v0.2.1

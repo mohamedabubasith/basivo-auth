@@ -195,6 +195,20 @@ class EmailProvider(StrEnum):
     SMTP = "smtp"
     RESEND = "resend"
     SES = "ses"
+    WEBHOOK = "webhook"
+    """POSTs the rendered email to a URL you control, which does the sending.
+
+    For an automation platform — n8n, Make, Zapier — or an internal mail
+    service. It lets the sending account be one this service never holds
+    credentials for: an operator connects Gmail to n8n over OAuth, and this
+    service only ever knows the webhook URL.
+
+    Note what that implies. The payload carries password-reset and email
+    verification links, which are credentials. Whatever is on the other end can
+    read them, and so can anything that logs the request. The generated code
+    requires HTTPS in production and signs every request for that reason.
+    """
+
     CONSOLE = "console"
     """Writes the rendered email to stdout. Development only."""
 

@@ -1,0 +1,145 @@
+# Sending email through a webhook
+
+This project does not send email itself. It POSTs each rendered message to a URL
+you own, and something on the other end — n8n, Make, Zapier, an internal
+service — does the sending.
+
+The reason to want this: the sending mailbox can be an account this service
+holds no credentials for. Connect Gmail to n8n over OAuth once, and all this
+service ever knows is a URL.
+
+## The one thing to understand first
+
+**The payload contains password-reset and email-verification links.** Those are
+credentials — anyone holding a reset link can take over the account it belongs
+to, until it expires or is used.
+
+So whatever receives this webhook is as security-critical as this service is.
+Your automation platform, its execution history, and anyone who can read that
+history can all see live reset links. n8n stores execution data by default;
+consider turning that off for this workflow, or setting a short retention.
+
+Two consequences are enforced rather than suggested. In staging or production
+the service **will not start** unless:
+
+- `EMAIL_WEBHOOK_URL` is `https://` — over plain HTTP the links are readable by
+  anything on the path, which is account takeover for every message sent
+- `EMAIL_WEBHOOK_SECRET` or `EMAIL_WEBHOOK_AUTH_HEADER` is set — see below
+
+## Configuration
+
+```bash
+EMAIL_WEBHOOK_URL=https://your-n8n.example.com/webhook/send-mail
+EMAIL_WEBHOOK_SECRET=<generated for you in .env>
+EMAIL_WEBHOOK_AUTH_HEADER=            # optional, sent as the Authorization header
+EMAIL_WEBHOOK_TIMEOUT_SECONDS=10
+```
+
+## What gets sent
+
+`POST` with `Content-Type: application/json`:
+
+```json
+{
+  "from": {"email": "no-reply@example.com", "name": "{{ project_name }}"},
+  "html": "<html>…</html>",
+  "project": "{{ project_name }}",
+  "subject": "Reset your password",
+  "text": "…",
+  "to": "person@example.com"
+}
+```
+
+Headers:
+
+| Header | |
+| --- | --- |
+| `X-Basivo-Timestamp` | Unix seconds, so you can reject an old capture |
+| `X-Basivo-Signature` | `sha256=<hmac>` over `timestamp + "." + body` |
+| `Authorization` | Only if `EMAIL_WEBHOOK_AUTH_HEADER` is set |
+
+Redirects are **not** followed. A 302 would forward the body — including a live
+reset link — to a host you never configured.
+
+## Why the signature is not optional
+
+An n8n webhook is a URL, and URLs leak: into browser history, a screenshot, a
+workflow someone exported and shared. An unauthenticated one lets whoever finds
+it send email **from your domain, with content of their choosing**. That is a
+phishing kit with your branding on it, and your domain's reputation behind it.
+
+The signature is what lets your workflow tell this service apart from whoever
+found the link.
+
+### Verifying it in n8n
+
+Add a **Code** node immediately after the Webhook node, before anything sends:
+
+```javascript
+const crypto = require('crypto');
+
+const secret    = $env.BASIVO_WEBHOOK_SECRET;   // set in n8n, not inline
+const signature = $input.first().headers['x-basivo-signature'] || '';
+const timestamp = $input.first().headers['x-basivo-timestamp'] || '';
+const raw       = $input.first().body;          // needs "Raw Body" on the Webhook node
+
+// Reject anything older than five minutes, so a captured request cannot be
+// replayed indefinitely.
+if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) {
+  throw new Error('Stale request');
+}
+
+const expected = 'sha256=' + crypto
+  .createHmac('sha256', secret)
+  .update(timestamp + '.' + raw)
+  .digest('hex');
+
+// timingSafeEqual, not ===. A plain comparison exits at the first wrong byte,
+// and the timing difference is enough to recover a signature one byte at a
+// time given enough attempts.
+const a = Buffer.from(signature);
+const b = Buffer.from(expected);
+if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+  throw new Error('Bad signature');
+}
+
+return $input.all();
+```
+
+Set the Webhook node's response mode so a thrown error returns a non-2xx: this
+service treats any non-2xx as a delivery failure and logs it, which is how a
+misconfigured signature check becomes visible instead of silent.
+
+**Enable "Raw Body" on the Webhook node.** If n8n parses and re-serialises the
+JSON, the bytes will differ from what was signed — key order and spacing are
+not guaranteed to survive a round trip — and every signature will fail.
+
+If you would rather not write the Code node, set `EMAIL_WEBHOOK_AUTH_HEADER` to
+a random value and use n8n's built-in **Header Auth** credential instead. That
+is weaker — a static token has no replay protection and is only as good as the
+transport — but it is enormously better than nothing, and it takes a minute.
+
+## Sending the mail
+
+After verification, a Gmail node with `To`, `Subject` and `Message` mapped from
+`{{ '{{ $json.body.to }}' }}`, `{{ '{{ $json.body.subject }}' }}` and
+`{{ '{{ $json.body.html }}' }}`. Set the message type to HTML, and use
+`{{ '{{ $json.body.text }}' }}` as the plaintext alternative if the node
+supports one — some mail clients, and most spam filters, prefer a multipart
+message.
+
+## When delivery fails
+
+A failed send is logged and returns `false`; it never raises into the request
+that triggered it. A user who registers successfully but whose email bounces
+still has an account, and the error is not surfaced to an unauthenticated
+caller — a delivery error is infrastructure detail.
+
+The practical consequence: **watch for `email_send_failed` in your logs.** If
+the webhook is down, registration keeps succeeding and nobody can confirm their
+address, and nothing else will tell you.
+
+The failure log includes the exception, which for an HTTP error contains the
+webhook URL. That is acceptable only because production requires the endpoint
+to be authenticated — the URL alone is not a credential. It is another reason
+not to run this with an open webhook.
