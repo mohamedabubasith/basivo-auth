@@ -13,6 +13,22 @@ so a released tag is never moved.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-09-08
+
+### Added
+
+- **Security scanning in CI.** CodeQL with the extended query set, a secret
+  scan over the whole history, and a lockfile audit. The job that matters most
+  runs against the OUTPUT: it generates a project, runs the security lint over
+  the generated code, and audits the lockfile that project would install. The
+  generator being clean says nothing about the code it writes.
+
+### Changed
+
+- `CLAUDE.md` and shared skills are no longer ignored. They carry the rules a
+  change has to respect, and a rule nobody can read is a rule that gets broken.
+
+
 ## [0.3.1] — 2026-08-09
 
 ### Added
