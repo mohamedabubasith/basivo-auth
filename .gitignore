@@ -30,10 +30,12 @@ htmlcov/
 !template/**/*.tfvars.jinja
 
 # --- ai assistants / editors ------------------------------------------------
-# Local assistant config and instruction files: personal to each developer and
-# not part of the tool.
-.claude/
-CLAUDE.md
+# CLAUDE.md is the contributor guide and belongs in the repository: it carries
+# the rules a change has to respect, and a rule nobody can read is a rule that
+# gets broken. Shared skills too. The rest of .claude/ is one developer's own
+# settings and stays out.
+.claude/*
+!.claude/skills/
 AGENTS.md
 AGENT.md
 .cursor/

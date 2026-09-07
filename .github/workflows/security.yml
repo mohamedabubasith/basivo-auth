@@ -1,0 +1,98 @@
+# This repository generates authentication code that other people deploy. A
+# weakness here is not one application's problem, it is every application the
+# generator has ever produced, so the scanning is separate from CI and runs on
+# a schedule: an advisory published overnight has nothing to do with whichever
+# commit happens to be on main.
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "11 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_NO_PROGRESS: "1"
+
+jobs:
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          language: python
+          queries: security-extended
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:python
+
+  secrets:
+    name: no secrets in the history
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  advisories:
+    name: dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Audited from the lockfile, which is what anyone installing this gets.
+      - name: pip-audit the lockfile
+        run: |
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/requirements.txt
+          uvx pip-audit --strict --disable-pip -r /tmp/requirements.txt
+
+  generated:
+    name: what it generates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras --dev
+
+      # The generator's own code being clean says nothing about the code it
+      # writes, and the generated project is the part that holds a password
+      # hash and a refresh token. Ruff's flake8-bandit rules are run over the
+      # output with nothing excluded.
+      - name: generate a project
+        run: |
+          uv run basivo-auth new scan-auth \
+            --local --defaults --no-git --no-install --preset enterprise
+
+      - name: security lint the generated code
+        working-directory: scan-auth
+        run: uvx ruff check --select S --output-format=github app
+
+      - name: the generated lockfile has no known advisories
+        working-directory: scan-auth
+        run: |
+          uv lock
+          uv export --frozen --no-dev --no-emit-project --format requirements-txt > /tmp/generated.txt
+          uvx pip-audit --strict --disable-pip -r /tmp/generated.txt

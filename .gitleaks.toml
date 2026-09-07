@@ -1,0 +1,32 @@
+# What counts as a leak here.
+#
+# This repository contains no credentials at all: it is a generator, so every
+# string that looks like one is either a template that WRITES token-handling
+# code or a fixture in the tests it emits. A scanner that reports those every
+# week is a scanner people stop reading, so they are named here and everything
+# else still fails the build.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Template code and generated test fixtures"
+
+paths = [
+  # The tests the generator writes. Their passwords and tokens are literals in
+  # a public template and open nothing.
+  '''template/project/\{\{ tests_dir \}\}/.*''',
+]
+
+regexes = [
+  # Template code that mints a token at run time. The high-entropy string the
+  # scanner sees is the call itself, not a value.
+  '''create_purpose_token''',
+  # The same call split across lines, where the scanner sees the arguments
+  # rather than the function name.
+  '''TokenType\.(STEP_UP|RESET_PASSWORD|MAGIC_LINK|VERIFY_EMAIL)''',
+  # A token lifetime in seconds, read as a high-entropy value because it sits
+  # on the same line as the word token.
+  '''ttl_seconds=\d+''',
+  '''TEST_PASSWORD''',
+]
