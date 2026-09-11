@@ -1,0 +1,78 @@
+- generic [ref=f1e12]:
+  - complementary [ref=f1e13]:
+    - generic [ref=f1e14]:
+      - generic [ref=f1e15]: Basivo
+      - button "L Live Check owner" [ref=f1e22]:
+        - generic [ref=f1e23]: L
+        - generic [ref=f1e24]:
+          - generic [ref=f1e25]: Live Check
+          - generic [ref=f1e26]: owner
+      - navigation [ref=f1e29]:
+        - generic [ref=f1e30]:
+          - paragraph [ref=f1e31]: Workspace
+          - list [ref=f1e32]:
+            - listitem [ref=f1e33]:
+              - link "Overview" [ref=f1e34] [cursor=pointer]:
+                - /url: /app
+            - listitem [ref=f1e40]:
+              - link "Flows" [ref=f1e41] [cursor=pointer]:
+                - /url: /app/flows
+            - listitem [ref=f1e50]:
+              - link "Apps" [ref=f1e51] [cursor=pointer]:
+                - /url: /app/apps
+            - listitem [ref=f1e59]:
+              - link "Runs" [ref=f1e60] [cursor=pointer]:
+                - /url: /app/runs
+            - listitem [ref=f1e67]:
+              - link "Tools and MCP" [ref=f1e68] [cursor=pointer]:
+                - /url: /app/tools
+            - listitem [ref=f1e75]:
+              - link "Skills" [ref=f1e76] [cursor=pointer]:
+                - /url: /app/skills
+        - generic [ref=f1e82]:
+          - paragraph [ref=f1e83]: Account
+          - list [ref=f1e84]:
+            - listitem [ref=f1e85]:
+              - link "API keys" [ref=f1e86] [cursor=pointer]:
+                - /url: /app/api-keys
+            - listitem [ref=f1e93]:
+              - link "Credentials" [ref=f1e94] [cursor=pointer]:
+                - /url: /app/credentials
+            - listitem [ref=f1e101]:
+              - link "Plan and usage" [ref=f1e102] [cursor=pointer]:
+                - /url: /app/billing
+            - listitem [ref=f1e109]:
+              - link "Security" [ref=f1e110] [cursor=pointer]:
+                - /url: /app/security
+      - button "A appbuild-check@basivo.dev Email confirmed" [ref=f1e118]:
+        - generic [ref=f1e119]: A
+        - generic [ref=f1e120]:
+          - generic [ref=f1e121]: appbuild-check@basivo.dev
+          - generic [ref=f1e122]: Email confirmed
+      - generic [ref=f1e125]:
+        - radiogroup "Colour theme" [ref=f1e126]:
+          - radio "Light" [ref=f1e127]
+          - radio "System" [checked] [ref=f1e131]
+          - radio "Dark" [ref=f1e135]
+        - button "Collapse sidebar" [ref=f1e138]
+  - main [ref=f1e142]:
+    - generic [ref=f1e185]:
+      - generic [ref=f1e186]:
+        - generic [ref=f1e187]:
+          - link "Apps" [ref=f1e188] [cursor=pointer]:
+            - /url: /app/apps
+          - heading "Nova Analytics" [level=1] [ref=f1e189]
+        - generic [ref=f1e190]: not deployed
+      - generic [ref=f1e192]:
+        - generic [ref=f1e193]:
+          - generic [ref=f1e213]:
+            - paragraph [ref=f1e214]: A SaaS analytics dashboard called Nova. Collapsible sidebar with icons, a top bar with a search box and a dark mode toggle that actually works. Four stat tiles with animated counting numbers on load and small sparklines. A weekly revenue bar chart built from divs that animates in with staggered bars. A tabbed panel switching between Overview, Customers and Billing with animated transitions. A sortable table of twenty recent orders with status badges. Clicking a row opens a slide over detail panel with a smooth enter and exit animation. Cards lift on hover, sections fade up on scroll, everything at sixty frames and respecting reduced motion. Realistic sample data throughout.
+            - generic [ref=f1e215]:
+              - generic [ref=f1e219]: Reading the project
+              - generic [ref=f1e220]: 0s
+          - form "Describe a change" [ref=f1e203]:
+            - textbox "Make the header smaller and move the menu above it" [disabled] [ref=f1e221]
+            - generic [ref=f1e205]:
+              - paragraph [ref=f1e206]: Working on your last message
+              - button "Working" [disabled] [ref=f1e222]
+        - paragraph [ref=f1e212]: Nothing built yet. Describe the page you want and it appears here.

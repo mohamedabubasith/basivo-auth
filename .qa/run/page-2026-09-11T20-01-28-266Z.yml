@@ -1,0 +1,124 @@
+- generic [ref=e46]:
+  - complementary [ref=e47]:
+    - generic [ref=e48]:
+      - generic [ref=e49]: Basivo
+      - button "L Live Check owner" [ref=e56]:
+        - generic [ref=e57]: L
+        - generic [ref=e58]:
+          - generic [ref=e59]: Live Check
+          - generic [ref=e60]: owner
+      - navigation [ref=e63]:
+        - generic [ref=e64]:
+          - paragraph [ref=e65]: Workspace
+          - list [ref=e66]:
+            - listitem [ref=e67]:
+              - link "Overview" [ref=e68] [cursor=pointer]:
+                - /url: /app
+            - listitem [ref=e75]:
+              - link "Flows" [ref=e76] [cursor=pointer]:
+                - /url: /app/flows
+            - listitem [ref=e85]:
+              - link "Apps" [ref=e86] [cursor=pointer]:
+                - /url: /app/apps
+            - listitem [ref=e93]:
+              - link "Runs" [ref=e94] [cursor=pointer]:
+                - /url: /app/runs
+            - listitem [ref=e101]:
+              - link "Tools and MCP" [ref=e102] [cursor=pointer]:
+                - /url: /app/tools
+            - listitem [ref=e109]:
+              - link "Skills" [ref=e110] [cursor=pointer]:
+                - /url: /app/skills
+        - generic [ref=e116]:
+          - paragraph [ref=e117]: Account
+          - list [ref=e118]:
+            - listitem [ref=e119]:
+              - link "API keys" [ref=e120] [cursor=pointer]:
+                - /url: /app/api-keys
+            - listitem [ref=e127]:
+              - link "Credentials" [ref=e128] [cursor=pointer]:
+                - /url: /app/credentials
+            - listitem [ref=e135]:
+              - link "Plan and usage" [ref=e136] [cursor=pointer]:
+                - /url: /app/billing
+            - listitem [ref=e143]:
+              - link "Security" [ref=e144] [cursor=pointer]:
+                - /url: /app/security
+      - button "A appbuild-check@basivo.dev Email confirmed" [ref=e152]:
+        - generic [ref=e153]: A
+        - generic [ref=e154]:
+          - generic [ref=e155]: appbuild-check@basivo.dev
+          - generic [ref=e156]: Email confirmed
+      - generic [ref=e159]:
+        - radiogroup "Colour theme" [ref=e160]:
+          - radio "Light" [ref=e161]
+          - radio "System" [checked] [ref=e165]
+          - radio "Dark" [ref=e169]
+        - button "Collapse sidebar" [ref=e172]
+  - main [ref=e176]:
+    - generic [ref=e178]:
+      - generic [ref=e179]:
+        - generic [ref=e180]:
+          - paragraph [ref=e181]: Overview
+          - heading "Welcome, appbuild-check" [level=1] [ref=e182]
+          - paragraph [ref=e183]: What your pipelines actually did in the last 7 days.
+        - generic [ref=e184]:
+          - button "1d" [ref=e185]
+          - button "7d" [ref=e187]
+          - button "30d" [ref=e190]
+      - generic [ref=e192]:
+        - generic [ref=e193]:
+          - paragraph [ref=e196]: Runs
+          - paragraph [ref=e197]: "4"
+          - paragraph [ref=e198]: 0 in flight
+        - generic [ref=e199]:
+          - paragraph [ref=e202]: Success rate
+          - paragraph [ref=e203]: 100.0%
+          - paragraph [ref=e204]: 0 failed
+        - generic [ref=e205]:
+          - paragraph [ref=e208]: Typical duration
+          - paragraph [ref=e209]: 21.2s
+          - paragraph [ref=e210]: p95 27.2s, the slow tail your users feel
+        - generic [ref=e211]:
+          - paragraph [ref=e214]: Saved by a retry
+          - paragraph [ref=e215]: "0"
+          - paragraph [ref=e216]: No run needed a retry to succeed.
+      - generic [ref=e218]:
+        - generic [ref=e219]:
+          - generic [ref=e220]:
+            - heading "Runs per day" [level=3] [ref=e221]
+            - paragraph [ref=e222]: Where the failures cluster is usually a date, not a node.
+          - generic [ref=e223]:
+            - generic [ref=e224]: Succeeded
+            - generic [ref=e226]: Failed
+        - generic [ref=e244]:
+          - generic [ref=e245]: 5 Sept
+          - generic [ref=e246]: 11 Sept
+      - generic [ref=e247]:
+        - generic [ref=e248]:
+          - generic [ref=e250]:
+            - heading "Where the time goes" [level=2] [ref=e251]
+            - paragraph [ref=e252]: Share of total run time by node. “The flow is slow” is not actionable; one node at 78% is.
+          - generic [ref=e253]:
+            - list [ref=e254]:
+              - listitem [ref=e255]:
+                - generic [ref=e256]:
+                  - generic [ref=e257]: build
+                  - generic [ref=e258]: 100.0%
+                - paragraph [ref=e261]: p50 21.2s · p95 27.2s · app.build
+              - listitem [ref=e262]:
+                - generic [ref=e263]:
+                  - generic [ref=e264]: start
+                  - generic [ref=e265]: 0.1%
+                - paragraph [ref=e268]: p50 11ms · p95 18ms · trigger.manual
+            - paragraph [ref=e269]: Ordered by total time. Only the top node is highlighted, and only when it dominates.
+        - generic [ref=e270]:
+          - generic [ref=e272]:
+            - heading "Reliability by node" [level=2] [ref=e273]
+            - paragraph [ref=e274]: Failure rate per node, and how often a retry rescued it.
+          - paragraph [ref=e275]: Not enough executions to rate reliability yet
+      - generic [ref=e276]:
+        - generic [ref=e278]:
+          - heading "Distinct failures" [level=2] [ref=e279]
+          - paragraph [ref=e280]: Grouped by error shape, not by run. Forty failed runs are usually two causes.
+        - paragraph [ref=e281]: Nothing failed in this window.
